@@ -1,14 +1,20 @@
-const URL_ = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
-const TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+const find = (re) => {
+  const k = Object.keys(process.env).find((n) => re.test(n));
+  return k ? process.env[k] : undefined;
+};
+const URL_ = find(/REST(_API)?_URL$/);
+const TOKEN = find(/REST(_API)?_TOKEN$/) ;
 const KEY = 'schedule-replacements';
 
 async function load() {
+  if (!URL_ || !TOKEN) throw new Error('Redis не подключён: нет переменных REST_URL и REST_TOKEN');
   const r = await fetch(`${URL_}/get/${KEY}`, { headers: { Authorization: `Bearer ${TOKEN}` } });
   const j = await r.json();
   try { return j.result ? JSON.parse(j.result) : {}; } catch { return {}; }
 }
 
 async function save(obj) {
+  if (!URL_ || !TOKEN) throw new Error('Redis не подключён: нет переменных REST_URL и REST_TOKEN');
   const r = await fetch(`${URL_}/set/${KEY}`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${TOKEN}` },
