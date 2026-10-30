@@ -68,9 +68,15 @@ $('go').onclick = async () => {
 $('pub').onclick = async () => {
   let rows;
   try { rows = JSON.parse($('json').value); } catch { return say('JSON некорректен.'); }
-  show(rows);
-  const r = await fetch('/api/replacements', { method: 'POST', headers: headers(), body: JSON.stringify({ date: $('date').value, rows }) });
-  const j = await r.json();
-  say(r.ok ? 'Опубликовано. На сайте обновится в течение минуты.' : (j.error || 'Ошибка'));
+  if (!$('date').value) return say('Выберите дату.');
+  say('Публикую…');
+  try {
+    const r = await fetch('/api/replacements', { method: 'POST', headers: headers(), body: JSON.stringify({ date: $('date').value, rows }) });
+    const raw = await r.text();
+    let j = {};
+    try { j = JSON.parse(raw); } catch {}
+    if (r.ok) return say('Опубликовано. На сайте обновится в течение минуты.');
+    say(`Ошибка ${r.status}: ${j.error || raw.slice(0, 150) || 'нет ответа'}`);
+  } catch (e) { say('Ошибка сети: ' + e.message); }
 };
 </script></body></html>
