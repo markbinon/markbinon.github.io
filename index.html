@@ -383,6 +383,7 @@ ayscale) var(--tw-hue-rotate) var(--tw-invert) var(--tw-saturate) var(--tw-sepia
     .gm-badge { flex-shrink: 0; font-size: .7rem; font-weight: 600; padding: .2rem .6rem; border-radius: 9999px; background: rgb(var(--p500) / .2); border: 1px solid rgb(var(--p400) / .4); color: rgb(var(--p200)); }
     .gm-foot { margin-top: 1.25rem; text-align: center; font-size: .75rem; line-height: 1.4; color: rgb(var(--r200) / .6); }
 
+
   </style>
 </head>
 <body class="min-h-screen py-4 sm:py-8 px-3 sm:px-6">
@@ -420,6 +421,8 @@ ayscale) var(--tw-hue-rotate) var(--tw-invert) var(--tw-saturate) var(--tw-sepia
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M7 7h12m0 0l-3-3m3 3l-3 3M17 17H5m0 0l3-3m-3 3l3 3"/></svg>
           Сменить группу
         </button>
+        
+        </button>
       </div>
 
       <!-- Week Toggle Switcher -->
@@ -456,6 +459,25 @@ ayscale) var(--tw-hue-rotate) var(--tw-invert) var(--tw-saturate) var(--tw-sepia
 
     <!-- Schedule List -->
     <main id="schedule-container" class="space-y-3">
+      <!-- Classes auto-populated by JS -->
+    </main>
+
+  </div>
+
+  <div id="camera-overlay" role="dialog" aria-modal="true" aria-labelledby="camera-title" aria-hidden="true">
+    <div id="camera-backdrop" class="camera-backdrop"></div>
+    <section class="camera-panel liquid-glass p-4 sm:p-5 space-y-4 rounded-2xl">
+      <div class="flex items-center justify-between gap-4">
+        <h2 id="camera-title" class="text-xl font-bold text-fg">Камера</h2>
+        <button id="close-camera-btn" type="button" aria-label="Закрыть камеру" class="glass-btn w-10 h-10 rounded-xl flex items-center justify-center text-rose-100 active:scale-95">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+      <video id="camera-video" class="camera-video" autoplay playsinline muted></video>
+      <p id="camera-status" class="text-sm text-rose-200/80" role="status" aria-live="polite">Запрашиваем доступ к камере…</p>
+      <p class="text-xs text-rose-200/60">Видео отображается только в этом браузере и не отправляется на сайт или GitHub.</p>
+    </section>
+  </div>
 
   <!-- Settings Modal -->
   <div id="settings-overlay" role="dialog" aria-modal="true" aria-labelledby="settings-title">
@@ -1020,6 +1042,71 @@ ${item.replaced ? '<span class="text-[10px] font-semibold px-2 py-0.5 rounded-fu
       document.getElementById('settings-btn').focus();
     }
 
+    let cameraStream = null;
+    let cameraRequestId = 0;
+
+    function stopCameraStream() {
+      if (cameraStream) {
+        cameraStream.getTracks().forEach(track => track.stop());
+        cameraStream = null;
+      }
+      const video = document.getElementById('camera-video');
+      video.pause();
+      video.srcObject = null;
+    }
+
+    async function startCamera() {
+      const overlay = document.getElementById('camera-overlay');
+      const video = document.getElementById('camera-video');
+      const status = document.getElementById('camera-status');
+      const requestId = ++cameraRequestId;
+
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        status.textContent = 'Для доступа к камере откройте сайт через HTTPS или localhost.';
+        return;
+      }
+
+      status.textContent = 'Запрашиваем разрешение на использование камеры…';
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        if (requestId !== cameraRequestId || !overlay.classList.contains('open')) {
+          stream.getTracks().forEach(track => track.stop());
+          return;
+        }
+
+        cameraStream = stream;
+        video.srcObject = stream;
+        const videoTracks = stream.getVideoTracks();
+        videoTracks.forEach(track => {
+          track.addEventListener('ended', () => {
+            if (requestId !== cameraRequestId || cameraStream !== stream) return;
+            stopCameraStream();
+            status.textContent = 'Камера отключена. Нажмите «Открыть камеру», чтобы попробовать снова.';
+          }, { once: true });
+        });
+        if (videoTracks.some(track => track.readyState === 'ended')) {
+          stopCameraStream();
+          status.textContent = 'Камера отключена. Нажмите «Открыть камеру», чтобы попробовать снова.';
+          return;
+        }
+
+        await video.play();
+        if (requestId !== cameraRequestId || cameraStream !== stream) return;
+        status.textContent = 'Камера включена. Видео отображается только в этом браузере.';
+      } catch (error) {
+        if (requestId !== cameraRequestId || (stream && cameraStream !== stream)) return;
+        stopCameraStream();
+        const messages = {
+          NotAllowedError: 'Доступ запрещён. Разрешите использование камеры в настройках браузера.',
+          PermissionDeniedError: 'Доступ запрещён. Разрешите использование камеры в настройках браузера.',
+          NotFoundError: 'Камера не найдена. Подключите камеру и попробуйте снова.',
+          NotReadableError: 'Камера занята другим приложением. Закройте его и попробуйте снова.'
+        };
+        status.textContent = messages[error.name] || `Не удалось включить камеру: ${error.message || error.name || 'неизвестная ошибка'}.`;
+      }
+    }
+
     function initSettings() {
       loadSettings();
       renderThemeGrid();
@@ -1114,6 +1201,7 @@ ${item.replaced ? '<span class="text-[10px] font-semibold px-2 py-0.5 rounded-fu
     // Auto-Initialization on page open
     window.addEventListener('DOMContentLoaded', () => {
       initSettings();
+      initCamera();
       const savedGroup = loadGroupId();
       applyGroup(savedGroup || GROUPS[0].id);
       detectRealDateTime();
