@@ -357,6 +357,16 @@
     .pair-num { font-size: .68rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: rgb(var(--accent)); margin-right: .15rem; }
     .pair-name { font-size: 1.02rem; font-weight: 700; line-height: 1.32; overflow-wrap: break-word; }
     .pair.cancelled .pair-name { text-decoration: line-through; opacity: .6; }
+    /* Точечное изменение одной подгруппы: пара остаётся, но помечается */
+    .pair.partial .pair-card { border-color: rgb(var(--bad) / .45); }
+    .pair.partial .dot { border-color: rgb(var(--bad)); }
+    .subs { list-style: none; margin: .65rem 0 0; padding: 0; display: flex; flex-direction: column; gap: .35rem; }
+    .sub-row { display: flex; align-items: flex-start; gap: .45rem; padding: .42rem .6rem; border-radius: .7rem; font-size: .8rem; line-height: 1.4; background: rgb(var(--warn) / .1); border: 1px solid rgb(var(--warn) / .32); overflow-wrap: anywhere; }
+    .sub-row.cx { background: rgb(var(--bad) / .1); border-color: rgb(var(--bad) / .34); }
+    .sub-tag { flex: none; padding-top: .1rem; font-size: .72rem; font-weight: 800; letter-spacing: .02em; color: rgb(var(--warn)); }
+    .sub-text { color: rgb(var(--text) / .85); }
+    .sub-row.cx .sub-tag { color: rgb(var(--bad)); }
+    .sub-row.cx .sub-text { color: rgb(var(--bad)); text-decoration: line-through; opacity: .85; }
     .meta { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .65rem; }
     .chip { display: inline-flex; align-items: flex-start; gap: .38rem; max-width: 100%; padding: .28rem .6rem; border-radius: .65rem; font-size: .78rem; line-height: 1.35; color: rgb(var(--text) / .75); background: rgb(var(--text) / .07); overflow-wrap: anywhere; }
     .chip .ico { width: .9rem; height: .9rem; margin-top: .12rem; opacity: .75; }
@@ -382,6 +392,8 @@
     html[data-compact="on"] .rail .dot { top: .8rem; }
     html[data-compact="on"] .rail::before { top: 1rem; }
     html[data-compact="on"] .meta { margin-top: .4rem; }
+    html[data-compact="on"] .subs { margin-top: .4rem; }
+    html[data-compact="on"] .sub-row { padding: .3rem .5rem; font-size: .76rem; }
     html[data-compact="on"] .pair-name { font-size: .95rem; }
 
     /* =====================================================
@@ -1576,18 +1588,61 @@ const SCHEDULE_MTOE_25_1 = {
       return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
     }
 
+    // sub: 0 — изменение всей пары, 1/2 — только этой подгруппы.
+    // Точечные изменения складываются в p.subs и не затрагивают остальных студентов пары.
     function getPairs(week, day) {
       const out = ((scheduleData[week] || {})[day] || []).map((p) => ({ ...p }));
       const rows = ((REPL[dateFor(week, day)] || {})[currentGroupId]) || [];
+
+      const locate = (pairNum) => {
+        const i = out.findIndex((p) => p.num === pairNum);
+        if (i >= 0) return i;
+        if (!PAIR_TIMES[pairNum]) return -1; // неизвестный номер пары — игнорируем
+        return out.push({ ...PAIR_TIMES[pairNum], num: pairNum, name: '', teacher: '', room: '' }) - 1;
+      };
+
       rows.forEach((r) => {
-        const i = out.findIndex((p) => p.num === r.pair);
-        if (!r.to) { if (i >= 0) out[i].cancelled = true; return; }
-        const room = r.to.room ? (r.sub ? `п/г ${r.sub}: ` : '') + 'ауд. ' + r.to.room : '';
-        const np = { ...(i >= 0 ? out[i] : PAIR_TIMES[r.pair] || {}), num: r.pair, name: r.to.subject, teacher: r.to.teacher || '', room, replaced: true, cancelled: false };
-        if (i >= 0) out[i] = np; else if (PAIR_TIMES[r.pair]) out.push(np);
+        const i = locate(Number(r.pair));
+        if (i < 0) return;
+        const p = out[i];
+        const sub = Number(r.sub) || 0;
+
+        if (sub === 0) {
+          if (!r.to) { p.cancelled = true; p.subs = []; return; }
+          Object.assign(p, {
+            name: r.to.subject, teacher: r.to.teacher || '',
+            room: r.to.room ? 'ауд. ' + r.to.room : '',
+            replaced: true, cancelled: false, subs: [],
+          });
+          return;
+        }
+
+        const entry = {
+          sub, cancelled: !r.to,
+          name: r.to ? (r.to.subject || '') : '',
+          teacher: r.to ? (r.to.teacher || '') : '',
+          room: r.to && r.to.room ? 'ауд. ' + r.to.room : '',
+        };
+        p.subs = p.subs || [];
+        const k = p.subs.findIndex((s) => s.sub === sub);
+        if (k >= 0) p.subs[k] = entry; else p.subs.push(entry);
+        p.subs.sort((a, b) => a.sub - b.sub);
       });
+
+      out.forEach((p) => {
+        if (!p.subs || !p.subs.length) return;
+        // Пара гаснет целиком, только если отменены обе подгруппы явно.
+        const both = p.subs.some((s) => s.sub === 1) && p.subs.some((s) => s.sub === 2);
+        if (both && p.subs.every((s) => s.cancelled)) { p.cancelled = true; p.replaced = false; return; }
+        p.subCancelled = p.subs.some((s) => s.cancelled);
+        if (p.subs.some((s) => !s.cancelled)) p.replaced = true;
+      });
+
       return out.sort((a, b) => a.num - b.num);
     }
+
+    // У пары без строки в базовом расписании названия нет — подставляем понятную подпись.
+    const pairTitle = (p) => p.name || (p.subs && p.subs.length ? 'Пара по подгруппам' : '');
 
     function loadReplacements() {
       fetch('/api/replacements')
@@ -1636,7 +1691,7 @@ const SCHEDULE_MTOE_25_1 = {
         const d = dateObjFor(currentWeek, day);
         const pairs = getPairs(currentWeek, day);
         const n = pairs.filter((p) => !p.cancelled).length;
-        const changed = pairs.some((p) => p.cancelled || p.replaced);
+        const changed = pairs.some((p) => p.cancelled || p.replaced || p.subCancelled);
         const isToday = realTodayIndex === i && currentWeek === realWeekType;
         btn.querySelector('.day-date').textContent = d.getDate();
         btn.querySelector('.day-sub').textContent = n ? `${n} ${pairWord(n)} · ${MONTHS_SHORT[d.getMonth()]}` : `Нет пар · ${MONTHS_SHORT[d.getMonth()]}`;
@@ -1682,11 +1737,11 @@ const SCHEDULE_MTOE_25_1 = {
           </div>
         </div>`;
       const cur = act.find((p) => nowMin >= toMin(p.start) && nowMin < toMin(p.end));
-      if (cur) return box('clock', 'Идёт сейчас', esc(cur.name), `Ещё ${dur(toMin(cur.end) - nowMin)} · до ${fmt(cur.end)}`);
+      if (cur) return box('clock', 'Идёт сейчас', esc(pairTitle(cur)), `Ещё ${dur(toMin(cur.end) - nowMin)} · до ${fmt(cur.end)}`);
       const next = act.find((p) => toMin(p.start) > nowMin);
       if (next) {
         const first = next === act[0];
-        return box('clock', first ? 'Первая пара сегодня' : 'Следующая пара', esc(next.name), `Через ${dur(toMin(next.start) - nowMin)} · в ${fmt(next.start)}`);
+        return box('clock', first ? 'Первая пара сегодня' : 'Следующая пара', esc(pairTitle(next)), `Через ${dur(toMin(next.start) - nowMin)} · в ${fmt(next.start)}`);
       }
       return box('check', 'На сегодня всё', 'Пары закончились', 'Можно отдыхать');
     }
@@ -1698,7 +1753,7 @@ const SCHEDULE_MTOE_25_1 = {
       const isToday = realTodayIndex >= 0 && days[realTodayIndex] === currentDay && currentWeek === realWeekType;
       const pairs = getPairs(currentWeek, currentDay);
       const active = pairs.filter((p) => !p.cancelled).length;
-      const changed = pairs.filter((p) => p.cancelled || p.replaced).length;
+      const changed = pairs.filter((p) => p.cancelled || p.replaced || p.subCancelled).length;
       const d = dateObjFor(currentWeek, currentDay);
 
       const titleHtml = `${esc(currentDay)}${isToday ? '<span class="badge badge-today">Сегодня</span>' : ''}`;
@@ -1731,11 +1786,15 @@ const SCHEDULE_MTOE_25_1 = {
           }
           const ongoing = isToday && !it.cancelled && it.start && nowMin >= toMin(it.start) && nowMin < toMin(it.end);
           const past = isToday && it.end && nowMin >= toMin(it.end);
-          const cls = ['pair', ongoing ? 'ongoing' : '', past && !ongoing ? 'past' : '', it.cancelled ? 'cancelled' : '', it.replaced ? 'replaced' : '', it.num === nextNum ? 'next' : ''].filter(Boolean).join(' ');
+          const subs = it.cancelled ? [] : (it.subs || []);
+          const subCx = subs.filter((s) => s.cancelled).map((s) => `п/г ${s.sub}`).join(', ');
+          const subRp = subs.filter((s) => !s.cancelled).map((s) => `п/г ${s.sub}`).join(', ');
+          const cls = ['pair', ongoing ? 'ongoing' : '', past && !ongoing ? 'past' : '', it.cancelled ? 'cancelled' : '', it.replaced ? 'replaced' : '', it.subCancelled ? 'partial' : '', it.num === nextNum ? 'next' : ''].filter(Boolean).join(' ');
           const progress = ongoing ? Math.max(0, Math.min(100, Math.round(((nowMin - toMin(it.start)) / (toMin(it.end) - toMin(it.start))) * 100))) : 0;
           const badges = [
             it.cancelled ? '<span class="badge badge-bad">Пары нет</span>' : '',
-            it.replaced ? '<span class="badge badge-warn">Замена</span>' : '',
+            subCx ? `<span class="badge badge-bad">Пары нет: ${esc(subCx)}</span>` : '',
+            it.replaced ? `<span class="badge badge-warn">${subRp ? 'Замена: ' + esc(subRp) : 'Замена'}</span>` : '',
             ongoing ? '<span class="badge badge-live"><i></i>Идёт сейчас</span>' : '',
             it.num === nextNum ? '<span class="badge badge-today">Следующая</span>' : ''
           ].join('');
@@ -1743,14 +1802,20 @@ const SCHEDULE_MTOE_25_1 = {
             it.teacher ? `<span class="chip js-teacher">${svg('user')}${esc(it.teacher)}</span>` : '',
             it.room ? `<span class="chip js-room">${svg('pin')}${esc(it.room)}</span>` : ''
           ].join('');
+          const subsHtml = subs.length ? `<ul class="subs">${subs.map((s) => `
+                  <li class="sub-row${s.cancelled ? ' cx' : ''}">
+                    <span class="sub-tag">п/г ${esc(s.sub)}</span>
+                    <span class="sub-text">${s.cancelled ? 'Пары нет' : esc([s.name, s.teacher, s.room].filter(Boolean).join(' · '))}</span>
+                  </li>`).join('')}</ul>` : '';
           listHtml += `
             <li class="${cls}" style="--i:${idx++}">
               <div class="pair-time"><b>${esc(fmt(it.start))}</b><span>${esc(fmt(it.end))}</span></div>
               <div class="rail"><i class="dot"></i></div>
               <article class="pair-card surface">
                 <div class="pair-head"><span class="pair-num">${esc(it.num)} пара</span>${badges}</div>
-                <h3 class="pair-name">${esc(it.name)}</h3>
+                <h3 class="pair-name">${esc(pairTitle(it))}</h3>
                 ${chips ? `<div class="meta">${chips}</div>` : ''}
+                ${subsHtml}
                 ${ongoing ? `<div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}"><i style="--p:${progress}%"></i></div>` : ''}
               </article>
             </li>`;
