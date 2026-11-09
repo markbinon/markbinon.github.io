@@ -38,11 +38,24 @@ $('pw').value = sessionStorage.getItem('pw') || '';
 const say = (s) => { $('msg').textContent = s; };
 const noticeSay = (s) => { $('noticeMsg').textContent = s; };
 
+// Читаем ответ как текст и только затем разбираем JSON: HTML-ошибки Vercel
+// показываются понятным сообщением вместо «JSON.parse unexpected character».
+async function readApiResponse(response) {
+  const raw = await response.text();
+  let data;
+  try { data = raw ? JSON.parse(raw) : {}; }
+  catch {
+    const preview = raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 180);
+    throw new Error(`Сервер вернул не JSON (HTTP ${response.status})${preview ? ': ' + preview : ''}`);
+  }
+  if (!response.ok) throw new Error(data.error || `Ошибка сервера HTTP ${response.status}`);
+  return data;
+}
+
 async function loadNoticeSettings() {
   try {
     const r = await fetch('/api/site-notice', { cache: 'no-store' });
-    const notice = await r.json();
-    if (!r.ok) throw new Error(notice.error || 'Не удалось загрузить настройки');
+    const notice = await readApiResponse(r);
     $('noticeShow').checked = Boolean(notice.show);
     $('noticeTitle').value = notice.title || 'Временно не работает';
     $('noticeSub').value = notice.sub || 'Ведутся технические работы. Загляните позже.';
@@ -64,8 +77,7 @@ $('noticeSave').onclick = async () => {
         sub: $('noticeSub').value.trim()
       })
     });
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.error || 'Ошибка сохранения');
+    await readApiResponse(r);
     noticeSay('Настройки сохранены. Сайт обновится примерно в течение 30 секунд.');
   } catch (e) {
     noticeSay('Не удалось сохранить: ' + e.message);
@@ -101,8 +113,9 @@ $('go').onclick = async () => {
   say('Распознаю…');
   try {
     const r = await fetch('/api/parse', { method: 'POST', headers: headers(), body: JSON.stringify({ image: await shrink(f), media_type: 'image/jpeg' }) });
-    const j = await r.json();
-    if (!r.ok) return say(j.error || 'Ошибка');
+    let j;
+    try { j = await readApiResponse(r); }
+    catch (e) { return say(e.message); }
     $('json').value = JSON.stringify(j.rows, null, 1);
     $('json').hidden = false; $('pub').hidden = false;
     show(j.rows);
