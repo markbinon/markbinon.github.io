@@ -518,6 +518,26 @@
     .badge-sub { color: rgb(var(--text) / .85); background: rgb(var(--text) / .08); border-color: rgb(var(--line)); }
     .meta { gap: .35rem; }
     .chip { padding: .22rem .55rem; }
+
+
+    /* Производительность на телефонах: меньше дорогих эффектов размытия */
+    @media (max-width: 700px), (hover: none) and (pointer: coarse) {
+      .surface {
+        -webkit-backdrop-filter: blur(10px) saturate(125%);
+        backdrop-filter: blur(10px) saturate(125%);
+      }
+      html[data-glass="on"] .scrim {
+        -webkit-backdrop-filter: blur(4px);
+        backdrop-filter: blur(4px);
+      }
+      /* Оставляем декоративное свечение, но не двигаем большие слои постоянно */
+      .blob { animation: none; will-change: auto; }
+    }
+
+    /* Не запускаем анимации при сниженной производительности/энергопотреблении */
+    @media (prefers-reduced-motion: reduce) {
+      .blob { will-change: auto; }
+    }
   </style>
 </head>
 <body>
@@ -2722,11 +2742,40 @@ const SCHEDULE_MTOE_25_1 = {
     // У пары без строки в базовом расписании названия нет — подставляем понятную подпись.
     const pairTitle = (p) => p.name || (p.subs && p.subs.length ? 'Пара по подгруппам' : '');
 
-    function loadReplacements() {
-      fetch('/api/replacements')
-        .then((r) => r.json())
-        .then((d) => { REPL = d || {}; replVer++; replLoadedAt = Date.now(); lastSig = ''; updateDays(); renderSchedule(false); })
-        .catch(() => {});
+    let replacementsRequest = null;
+    async function loadReplacements() {
+      // Не запускаем одинаковые запросы параллельно и не тратим трафик в фоне.
+      if (document.hidden) return;
+      if (replacementsRequest) return replacementsRequest;
+      replacementsRequest = (async () => {
+        try {
+          const response = await fetch('/api/replacements', {
+            cache: 'no-store',
+            headers: { Accept: 'application/json' }
+          });
+          if (!response.ok) throw new Error('HTTP ' + response.status);
+          const type = response.headers.get('content-type') || '';
+          if (!type.toLowerCase().includes('application/json')) {
+            throw new Error('API вернул ответ не в формате JSON');
+          }
+          const data = await response.json();
+          if (!data || typeof data !== 'object' || Array.isArray(data)) {
+            throw new Error('Некорректный формат замен');
+          }
+          REPL = data;
+          replVer++;
+          replLoadedAt = Date.now();
+          lastSig = '';
+          updateDays();
+          renderSchedule(false);
+        } catch (error) {
+          // При временной ошибке сохраняем последние успешно загруженные замены.
+          console.warn('Не удалось обновить замены расписания:', error);
+        } finally {
+          replacementsRequest = null;
+        }
+      })();
+      return replacementsRequest;
     }
 
     // ===== Текущее время =====
@@ -2768,8 +2817,12 @@ const SCHEDULE_MTOE_25_1 = {
         const day = days[i];
         const d = dateObjFor(currentWeek, day);
         const pairs = getPairs(currentWeek, day);
-        const n = pairs.filter((p) => !p.cancelled).length;
-        const changed = pairs.some((p) => p.cancelled || p.replaced || p.subCancelled);
+        // Один проход вместо отдельных filter()/some() по одному и тому же массиву.
+        let n = 0, changed = false;
+        for (const pair of pairs) {
+          if (!pair.cancelled) n++;
+          if (pair.cancelled || pair.replaced || pair.subCancelled) changed = true;
+        }
         const isToday = realTodayIndex === i && currentWeek === realWeekType;
         btn.querySelector('.day-date').textContent = d.getDate();
         btn.querySelector('.day-sub').textContent = n ? `${n} ${pairWord(n)} · ${MONTHS_SHORT[d.getMonth()]}` : `Нет пар · ${MONTHS_SHORT[d.getMonth()]}`;
@@ -2830,8 +2883,12 @@ const SCHEDULE_MTOE_25_1 = {
       const nowMin = now.getHours() * 60 + now.getMinutes();
       const isToday = realTodayIndex >= 0 && days[realTodayIndex] === currentDay && currentWeek === realWeekType;
       const pairs = getPairs(currentWeek, currentDay);
-      const active = pairs.filter((p) => !p.cancelled).length;
-      const changed = pairs.filter((p) => p.cancelled || p.replaced || p.subCancelled).length;
+      // Считаем статистику одним проходом, не создавая два промежуточных массива.
+      let active = 0, changed = 0;
+      for (const pair of pairs) {
+        if (!pair.cancelled) active++;
+        if (pair.cancelled || pair.replaced || pair.subCancelled) changed++;
+      }
       const d = dateObjFor(currentWeek, currentDay);
 
       const titleHtml = `${esc(currentDay)}${isToday ? '<span class="badge badge-today">Сегодня</span>' : ''}`;
@@ -2865,9 +2922,21 @@ const SCHEDULE_MTOE_25_1 = {
           const ongoing = isToday && !it.cancelled && it.start && nowMin >= toMin(it.start) && nowMin < toMin(it.end);
           const past = isToday && it.end && nowMin >= toMin(it.end);
           const subs = it.cancelled ? [] : (it.subs || []);
-          const subCx = subs.filter((s) => s.cancelled).map((s) => `п/г ${s.sub}`).join(', ');
-          const subRp = subs.filter((s) => !s.cancelled).map((s) => `п/г ${s.sub}`).join(', ');
-          const cls = ['pair', ongoing ? 'ongoing' : '', past && !ongoing ? 'past' : '', it.cancelled ? 'cancelled' : '', it.replaced ? 'replaced' : '', it.subCancelled ? 'partial' : '', it.num === nextNum ? 'next' : ''].filter(Boolean).join(' ');
+          // Собираем статусы подгрупп за один проход, без двух временных массивов.
+          const cancelledSubs = [], activeSubs = [];
+          for (const sub of subs) {
+            (sub.cancelled ? cancelledSubs : activeSubs).push(`п/г ${sub.sub}`);
+          }
+          const subCx = cancelledSubs.join(', ');
+          const subRp = activeSubs.join(', ');
+          const clsParts = ['pair'];
+          if (ongoing) clsParts.push('ongoing');
+          if (past && !ongoing) clsParts.push('past');
+          if (it.cancelled) clsParts.push('cancelled');
+          if (it.replaced) clsParts.push('replaced');
+          if (it.subCancelled) clsParts.push('partial');
+          if (it.num === nextNum) clsParts.push('next');
+          const cls = clsParts.join(' ');
           const progress = ongoing ? Math.max(0, Math.min(100, Math.round(((nowMin - toMin(it.start)) / (toMin(it.end) - toMin(it.start))) * 100))) : 0;
           const sm = /^только п\/г (\d+):\s*(.*)$/i.exec(it.room || '');
           const roomText = sm ? sm[2] : it.room;
@@ -3168,47 +3237,73 @@ const SCHEDULE_MTOE_25_1 = {
   <script>
   // Ненавязчивое уведомление о технических работах из админ-панели.
   (function () {
+    'use strict';
     var noticeId = 'site-maintenance-notice';
+    var noticeRequest = null;
+
     async function refreshSiteNotice() {
-      try {
-        var response = await fetch('/api/site-notice', { cache: 'no-store' });
-        if (!response.ok) return;
-        var notice = await response.json();
-        var existing = document.getElementById(noticeId);
-        if (!notice.show) {
-          if (existing) existing.remove();
-          return;
+      // Не опрашиваем API, пока вкладка скрыта, и не дублируем запросы.
+      if (document.hidden || noticeRequest) return;
+      noticeRequest = (async function () {
+        try {
+          var response = await fetch('/api/site-notice', {
+            cache: 'no-store',
+            headers: { Accept: 'application/json' }
+          });
+          if (!response.ok) throw new Error('HTTP ' + response.status);
+          var contentType = response.headers.get('content-type') || '';
+          if (!contentType.toLowerCase().includes('application/json')) {
+            throw new Error('API вернул ответ не в формате JSON');
+          }
+          var notice = await response.json();
+          if (!notice || typeof notice !== 'object' || Array.isArray(notice)) {
+            throw new Error('Некорректный формат уведомления');
+          }
+
+          var existing = document.getElementById(noticeId);
+          if (notice.show !== true) {
+            if (existing) existing.remove();
+            return;
+          }
+          if (!existing) {
+            existing = document.createElement('div');
+            existing.id = noticeId;
+            existing.setAttribute('role', 'status');
+            existing.style.cssText = 'position:relative;z-index:10;box-sizing:border-box;width:100%;padding:12px 16px;background:#ffdf3d;color:#241d00;text-align:center;font-family:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;border-bottom:2px solid #e0b900;box-shadow:0 2px 8px rgba(0,0,0,.12)';
+            var title = document.createElement('strong');
+            title.className = 'site-notice-title';
+            title.style.cssText = 'display:block;font-size:16px;line-height:1.35;font-weight:800;margin:0 0 2px';
+            var sub = document.createElement('span');
+            sub.className = 'site-notice-sub';
+            sub.style.cssText = 'display:block;font-size:14px;line-height:1.45;font-weight:500';
+            existing.append(title, sub);
+            document.body.insertBefore(existing, document.body.firstChild);
+          }
+          var titleEl = existing.querySelector('.site-notice-title');
+          var subEl = existing.querySelector('.site-notice-sub');
+          if (titleEl) titleEl.textContent = typeof notice.title === 'string' && notice.title.trim() ? notice.title : 'Временно не работает';
+          if (subEl) subEl.textContent = typeof notice.sub === 'string' && notice.sub.trim() ? notice.sub : 'Ведутся технические работы. Загляните позже.';
+        } catch (error) {
+          // Ошибка API не должна блокировать расписание.
+          console.warn('Не удалось получить статус технических работ:', error);
+        } finally {
+          noticeRequest = null;
         }
-        if (!existing) {
-          existing = document.createElement('div');
-          existing.id = noticeId;
-          existing.setAttribute('role', 'status');
-          existing.style.cssText = 'position:relative;z-index:99999;box-sizing:border-box;width:100%;padding:12px 16px;background:#ffdf3d;color:#241d00;text-align:center;font-family:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;border-bottom:2px solid #e0b900;box-shadow:0 2px 8px rgba(0,0,0,.12)';
-          var title = document.createElement('strong');
-          title.className = 'site-notice-title';
-          title.style.cssText = 'display:block;font-size:16px;line-height:1.35;font-weight:800;margin:0 0 2px';
-          var sub = document.createElement('span');
-          sub.className = 'site-notice-sub';
-          sub.style.cssText = 'display:block;font-size:14px;line-height:1.45;font-weight:500';
-          existing.append(title, sub);
-          // Вставляем в начало страницы, чтобы уведомление не перекрывало контент.
-          document.body.insertBefore(existing, document.body.firstChild);
-        }
-        var titleEl = existing.querySelector('.site-notice-title');
-        var subEl = existing.querySelector('.site-notice-sub');
-        if (titleEl) titleEl.textContent = notice.title || 'Временно не работает';
-        if (subEl) subEl.textContent = notice.sub || 'Ведутся технические работы. Загляните позже.';
-      } catch (e) {
-        // Если API временно недоступен, не блокируем сайт.
-        console.warn('Не удалось получить статус технических работ', e);
-      }
+      })();
+      return noticeRequest;
     }
+
     if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', refreshSiteNotice);
+      document.addEventListener('DOMContentLoaded', refreshSiteNotice, { once: true });
     } else {
       refreshSiteNotice();
     }
-    window.setInterval(refreshSiteNotice, 30000);
+    window.setInterval(function () {
+      if (!document.hidden) refreshSiteNotice();
+    }, 30000);
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) refreshSiteNotice();
+    });
   })();
   </script>
 </body>
