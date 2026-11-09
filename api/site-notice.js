@@ -5,12 +5,14 @@ const DEFAULT_NOTICE = {  show: false,  title: 'Временно не работ
 };
 
 module.exports = async (req, res) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   try {
     if (req.method === 'GET') {
       res.setHeader('Cache-Control', 'no-store, max-age=0');
       return res.status(200).json({ ...DEFAULT_NOTICE, ...(await loadNotice()) });
     }
     if (req.method === 'POST') {
+      res.setHeader('Cache-Control', 'no-store, max-age=0');
       if (!authed(req)) return res.status(401).json({ error: 'Неверный пароль' });
       const body = req.body || {};
       const notice = {
