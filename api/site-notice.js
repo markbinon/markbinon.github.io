@@ -1,8 +1,6 @@
-const { loadNotice, saveNotice, authed } = require('../_store');
+const { loadNotice, saveNotice, authed } = require('./_store');
 
-const DEFAULT_NOTICE = {
-  show: false,
-  title: 'Временно не работает',
+const DEFAULT_NOTICE = {  show: false,  title: 'Временно не работает',
   sub: 'Ведутся технические работы. Загляните позже.'
 };
 
