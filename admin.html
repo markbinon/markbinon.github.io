@@ -10,6 +10,16 @@ textarea{height:12rem;font-family:monospace;font-size:.75rem}
 li{margin:.3rem 0}.cx{color:#fb7185}#msg{color:#f9a8d4}
 </style></head><body>
 <h1>Загрузка замен</h1>
+<section style="border:1px solid #f472b655;border-radius:1rem;padding:.8rem;margin:1rem 0 1.5rem">
+  <h2>Технические работы</h2>
+  <label style="display:flex;align-items:center;gap:.6rem"><input id="noticeShow" type="checkbox" style="width:auto"> Показывать сообщение о технических работах</label>
+  <label for="noticeTitle">Заголовок</label>
+  <input id="noticeTitle" value="Временно не работает" maxlength="120">
+  <label for="noticeSub">Текст сообщения</label>
+  <textarea id="noticeSub" style="height:5rem;font-family:system-ui,sans-serif;font-size:1rem" maxlength="500">Ведутся технические работы. Загляните позже.</textarea>
+  <button id="noticeSave" type="button">Сохранить настройки</button>
+  <p id="noticeMsg" aria-live="polite"></p>
+</section>
 <input id="pw" type="password" placeholder="Пароль">
 <label>Дата, на которую действуют замены</label>
 <input id="date" type="date">
@@ -26,6 +36,41 @@ const t = new Date(Date.now() + 864e5);
 $('date').value = `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}`;
 $('pw').value = sessionStorage.getItem('pw') || '';
 const say = (s) => { $('msg').textContent = s; };
+const noticeSay = (s) => { $('noticeMsg').textContent = s; };
+
+async function loadNoticeSettings() {
+  try {
+    const r = await fetch('/api/site-notice', { cache: 'no-store' });
+    const notice = await r.json();
+    if (!r.ok) throw new Error(notice.error || 'Не удалось загрузить настройки');
+    $('noticeShow').checked = Boolean(notice.show);
+    $('noticeTitle').value = notice.title || 'Временно не работает';
+    $('noticeSub').value = notice.sub || 'Ведутся технические работы. Загляните позже.';
+  } catch (e) {
+    noticeSay('Не удалось загрузить настройки: ' + e.message);
+  }
+}
+
+$('noticeSave').onclick = async () => {
+  sessionStorage.setItem('pw', $('pw').value);
+  noticeSay('Сохраняю…');
+  try {
+    const r = await fetch('/api/site-notice', {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({
+        show: $('noticeShow').checked,
+        title: $('noticeTitle').value.trim(),
+        sub: $('noticeSub').value.trim()
+      })
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || 'Ошибка сохранения');
+    noticeSay('Настройки сохранены. Сайт обновится примерно в течение 30 секунд.');
+  } catch (e) {
+    noticeSay('Не удалось сохранить: ' + e.message);
+  }
+};
 
 async function shrink(file) {
   const bmp = await createImageBitmap(file);
@@ -79,4 +124,5 @@ $('pub').onclick = async () => {
     say(`Ошибка ${r.status}: ${j.error || raw.slice(0, 150) || 'нет ответа'}`);
   } catch (e) { say('Ошибка сети: ' + e.message); }
 };
+loadNoticeSettings();
 </script></body></html>
