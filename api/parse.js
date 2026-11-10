@@ -199,20 +199,23 @@ const fixTeacher = (raw) => {
 
 // Аудитория: чиним формат (тире, пробелы, похожие буквы), но номер НЕ подменяем по справочнику
 const fixRoom = (raw) => {
-  raw = String(raw || '');
-  if (raw.length > 14) { // в поле попал лишний текст: берём последний номер вида 21-45а
+  raw = String(raw || '').trim().replace(/^ауд(итория|\.)?\s*/i, '');
+  // В поле попали рассуждения модели (а не просто номер): берём последний номер вида 21-45а.
+  // Обычные значения («Спортзал (21-001)», «п/г 1: 21-17 | п/г 2: 21-34») не трогаем.
+  if (raw.length > 14 && /[?!]|извин|нет,|или |смотрим/i.test(raw)) {
     const all = raw.match(/\b\d{2}\s?-\s?\d{2,3}[а-яa-z]?(?![а-яa-z\d])/gi);
     if (all) raw = all[all.length - 1];
   }
-  let s = String(raw || '').trim().replace(/[–—−]/g, '-').replace(/\s*-\s*/g, '-').replace(/\s+/g, '');
+  const text = raw.replace(/[–—−]/g, '-').replace(/\s+/g, ' ').trim();
+  let s = text.replace(/\s*-\s*/g, '-').replace(/\s+/g, '');
   if (!s || /^-+$/.test(s)) return '';
   const m = s.match(/^([0-9OoIl]{2})-([0-9OoIl]{2,3})([A-Za-zА-Яа-я]?)$/);
   if (m) {
     const dig = (x) => x.replace(/[Oo]/g, '0').replace(/[Il]/g, '1');
     const suf = m[3].toLowerCase().replace('a', 'а');
-    s = `${dig(m[1])}-${dig(m[2])}${suf}`;
+    return `${dig(m[1])}-${dig(m[2])}${suf}`;
   }
-  return s;
+  return text; // составные значения («Спортзал (21-001)», «п/г 1: … | п/г 2: …») оставляем как есть
 };
 
 const fixLesson = (l, warns, where) => {
