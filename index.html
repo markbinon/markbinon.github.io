@@ -528,7 +528,7 @@
       .surface { background: #fff; box-shadow: none; border-color: #bbb; -webkit-backdrop-filter: none; backdrop-filter: none; }
     }
   
-/* Меню скачивания приложения */
+/* Меню скачивания приложения — цвета берутся из активной темы сайта */
 .download-app-trigger {
   display: flex;
   align-items: center;
@@ -537,20 +537,27 @@
   width: 100%;
   margin-top: 14px;
   padding: 13px 16px;
-  border: 1px solid var(--line, rgba(255,255,255,.14));
+  border: 1px solid rgb(var(--accent) / .32);
   border-radius: 16px;
-  color: var(--text, #fff);
-  background: linear-gradient(135deg, rgba(219,39,119,.18), rgba(139,92,246,.12));
+  color: rgb(var(--text));
+  background: linear-gradient(135deg, rgb(var(--accent) / .16), rgb(var(--accent2) / .10));
+  box-shadow: 0 8px 24px rgb(var(--shadow) / .12), inset 0 1px 0 rgb(var(--g1));
   font: inherit;
   font-weight: 750;
   cursor: pointer;
-  transition: transform .2s ease, border-color .2s ease, background .2s ease;
+  transition: transform .2s ease, border-color .2s ease, background .2s ease, box-shadow .2s ease;
 }
-.download-app-trigger:hover { transform: translateY(-1px); border-color: rgba(236,72,153,.55); }
+.download-app-trigger:hover {
+  transform: translateY(-1px);
+  border-color: rgb(var(--accent) / .68);
+  background: linear-gradient(135deg, rgb(var(--accent) / .23), rgb(var(--accent2) / .15));
+  box-shadow: 0 10px 28px rgb(var(--shadow) / .18), inset 0 1px 0 rgb(var(--g1));
+}
+.download-app-trigger:active { transform: translateY(0); }
 .download-app-trigger:focus-visible,
 .download-option:focus-visible,
-.download-close:focus-visible { outline: 3px solid #ec4899; outline-offset: 3px; }
-.download-app-trigger svg { width: 21px; height: 21px; flex: 0 0 auto; }
+.download-close:focus-visible { outline: 3px solid rgb(var(--accent)); outline-offset: 3px; }
+.download-app-trigger svg { width: 21px; height: 21px; flex: 0 0 auto; color: rgb(var(--accent)); }
 
 .download-overlay {
   position: fixed;
