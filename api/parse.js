@@ -1,4 +1,3 @@
-
 const { authed } = require('./_store');
 
 const GROUPS = {
@@ -31,9 +30,12 @@ const norm = (s) => String(s || '').toLowerCase()
   .replace(/[kcmptoeayxhbsn]/g, (ch) => LAT[ch])
   .replace(/[^а-яё0-9]/g, '');
 
-const PROMPT = `На изображении лист замен в расписании (фото таблицы).
+const PROMPT = `Ты распознаёшь фотографию таблицы замен в расписании колледжа.
+
+ОЧЕНЬ ВАЖНО: НЕ ПРИДУМЫВАЙ ДАННЫЕ. НЕ ЗАПОЛНЯЙ ПУСТЫЕ ЯЧЕЙКИ ФРАЗОЙ «Пары нет».
+
 Столбцы слева направо:
-1) № пары — РИМСКАЯ цифра (I–VI) в объединённой ячейке;
+1) № пары — римская цифра I–VI в объединённой ячейке;
 2) учебная группа;
 3) п/г старого занятия;
 4) СТАРОЕ занятие: дисциплина, преподаватель, аудитория;
@@ -41,21 +43,45 @@ const PROMPT = `На изображении лист замен в распис�
 6) НОВОЕ занятие: дисциплина, преподаватель, аудитория;
 7) подпись (игнорируй).
 
-Верни ВСЕ строки таблицы сверху вниз, ничего не пропускай.
-Ответ строго в формате JSON-объекта:
+Верни ВСЕ строки таблицы сверху вниз.
+
+Формат ответа — строго JSON-объект:
 {"rows":[{"group":"мКСК-25-2","pair":5,"sub":0,"from":{"subject":"","teacher":"","room":""},"to":{"subject":"","teacher":"","room":""}}]}
 
-Правила:
-- pair — целое число 1–6. I=1, II=2, III=3, IV=4, V=5, VI=6.
-- Записывай номер пары во ВСЕХ строках, относящихся к объединённой ячейке. Строки над цифрой также относятся к этой ячейке.
-- Если цифра не видна — pair: null.
-- sub — подгруппа: 0 (вся группа), 1 или 2. Бери п/г старого занятия; если старое «Пары нет» — п/г нового.
-- Если в новой части «Пары нет», то to: null.
-- Если в старой части «Пары нет», то from: {"subject":"","teacher":"","room":""}.
+ПРАВИЛА РАСПОЗНАВАНИЯ:
+
+1. Читай каждую строку отдельно. Не переноси предметы, преподавателей и аудитории из соседних строк.
+2. Не додумывай текст по смыслу. Если текст неразборчив или ячейка пустая — оставляй соответствующее поле пустой строкой.
+3. Фразу «Пары нет» разрешено использовать ТОЛЬКО если именно эти слова отчётливо напечатаны в соответствующей ячейке на фотографии.
+4. Пустая ячейка, прочерк, отсутствие предмета или отсутствие преподавателя НЕ означают «Пары нет».
+5. Если в новой части занятия явно написано «Пары нет», тогда to: null.
+6. Если в старой части занятия явно написано «Пары нет», тогда from: {"subject":"","teacher":"","room":""}.
+7. Если ты не уверен, написано ли «Пары нет», НЕ используй эту фразу. Оставь поля пустыми.
+8. Не заполняй все строки одной и той же фразой. Каждую ячейку проверяй отдельно по изображению.
+9. Не создавай дополнительные строки, которых нет в таблице.
+
+НОМЕР ПАРЫ:
+- pair — целое число от 1 до 6.
+- I=1, II=2, III=3, IV=4, V=5, VI=6.
+- Номер пары записывай во ВСЕХ строках, относящихся к объединённой ячейке.
+- Строки над цифрой также могут относиться к этой ячейке.
+- Если цифра не видна и её нельзя достоверно определить — pair: null.
+
+ПОДГРУППА:
+- sub — 0 (вся группа), 1 или 2.
+- Бери номер подгруппы старого занятия.
+- Если в старом занятии явно написано «Пары нет», бери номер подгруппы нового занятия.
+- Если подгруппу определить нельзя — 0.
+
+ОСТАЛЬНОЕ:
 - Название группы пиши с дефисами, как в таблице.
-- Текст переноси точно как в таблице.
+- Текст предметов и преподавателей переноси точно как на фотографии.
 - Номера аудиторий, разбитые переносом строки ("21-" и "45а", "22-" и "211"), склеивай ("21-45а", "22-211").
-- Ничего не выдумывай. Пустые ячейки — пустая строка.`;
+- Не путай номер пары с номером аудитории.
+- Не используй сведения, которых нет на изображении.
+
+Перед ответом проверь каждую строку и каждую ячейку отдельно.
+Верни только JSON.`;
 
 const ROMAN = { i: 1, ii: 2, iii: 3, iv: 4, v: 5, vi: 6 };
 
@@ -191,8 +217,29 @@ const fixRoom = (raw) => {
   return text;
 };
 
+// Проверяем, действительно ли модель написала «Пары нет»
+const isNoPairs = (lesson) => {
+  if (!lesson || typeof lesson !== 'object') return false;
+
+  const fields = [
+    lesson.subject,
+    lesson.teacher,
+    lesson.room
+  ];
+
+  return fields.some((value) =>
+    /^пары?\s+нет[.!]?$/i.test(String(value || '').trim())
+  );
+};
+
+const emptyLesson = () => ({
+  subject: '',
+  teacher: '',
+  room: ''
+});
+
 const fixLesson = (l, warns, where) => {
-  if (!l || typeof l !== 'object') return l || null;
+  if (!l || typeof l !== 'object') return emptyLesson();
 
   const t = fixTeacher(l.teacher);
   if (t.warn) warns.push(`${where}: ${t.warn}`);
@@ -206,7 +253,6 @@ const fixLesson = (l, warns, where) => {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Определяем, сколько ждать после ограничения Groq
 const getRetryDelay = (headers, errorMessage, attempt) => {
   const resetHeader =
     headers?.get('x-ratelimit-reset-tokens') ||
@@ -230,7 +276,6 @@ const getRetryDelay = (headers, errorMessage, attempt) => {
     seconds = Math.min(3 * (attempt + 1), 15);
   }
 
-  // Дополнительная секунда, чтобы лимит успел обновиться
   return Math.min(30000, Math.max(1000, seconds * 1000 + 1000));
 };
 
@@ -320,7 +365,6 @@ async function recognize(image, mt) {
   let lastErr = null;
   let lastText = '';
 
-  // До 6 попыток, включая ожидание при rate limit
   for (let attempt = 0; attempt < 6; attempt++) {
     let result;
 
@@ -342,15 +386,8 @@ async function recognize(image, mt) {
       console.error('GROQ API ERROR:', result.status, result.error);
 
       if (result.status === 429) {
-        const wait = getRetryDelay(
-          null,
-          result.error,
-          attempt
-        );
-
+        const wait = getRetryDelay(null, result.error, attempt);
         console.log('GROQ RATE LIMIT: ожидание', wait, 'мс');
-
-        // Небольшой случайный сдвиг, чтобы повторные запросы не совпадали
         await sleep(wait + Math.floor(Math.random() * 700));
         continue;
       }
@@ -379,7 +416,11 @@ async function recognize(image, mt) {
       console.error('GROQ JSON ERROR:', e.message);
       console.error('GROQ RAW RESPONSE:', result.text);
 
-      extra = 'Предыдущий ответ не подошёл. Верни строго JSON-объект вида {"rows":[...]}. Внутри rows должны быть все строки таблицы.';
+      extra = `Предыдущий ответ не подошёл.
+Верни строго JSON-объект {"rows":[...]}.
+Не добавляй пояснений.
+Не пропускай строки таблицы.
+Не выдумывай «Пары нет»: используй эту фразу только если она отчётливо видна в конкретной ячейке.`;
     }
   }
 
@@ -471,12 +512,28 @@ module.exports = async (req, res) => {
       const group = GROUPS[norm(x.group)];
       const where = `${group}, пара ${x._pair}`;
 
+      // Если модель написала «Пары нет» в старом занятии,
+      // очищаем старое занятие.
+      const fromNoPairs = isNoPairs(x.from);
+
+      // Если модель написала «Пары нет» в новом занятии,
+      // нового занятия нет.
+      const toNoPairs = isNoPairs(x.to);
+
+      const from = fromNoPairs
+        ? emptyLesson()
+        : fixLesson(x.from, warnings, where);
+
+      const to = toNoPairs || !x.to
+        ? null
+        : fixLesson(x.to, warnings, where);
+
       return {
         group,
         pair: x._pair,
         sub: Number(x.sub) || 0,
-        from: fixLesson(x.from, warnings, where),
-        to: x.to ? fixLesson(x.to, warnings, where) : null
+        from,
+        to
       };
     })
     .filter((r) => r.pair > 0);
