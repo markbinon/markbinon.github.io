@@ -3472,6 +3472,10 @@ const SCHEDULE_MTOE_25_1 = {
     (function () {
       var overlay = document.getElementById('download-app-overlay');
       var openButton = document.getElementById('download-app-trigger');
+      /* Внутри Android-приложения (Capacitor) кнопка «Скачать приложение» не нужна: убираем её вместе с меню. */
+      var C = window.Capacitor;
+      var inApp = !!C && (typeof C.isNativePlatform === 'function' ? C.isNativePlatform() : true);
+      if (inApp) { if (overlay) overlay.remove(); if (openButton) openButton.remove(); return; }
       if (!overlay || !openButton) return;
       var closeButtons = overlay.querySelectorAll('[data-download-close]');
       var lastFocused = null;
