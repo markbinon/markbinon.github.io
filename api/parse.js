@@ -1,4 +1,3 @@
-
 const { authed } = require('./_store');
 
 // Название группы из таблицы -> id группы на сайте
@@ -46,7 +45,6 @@ const PROMPT = `В каждом поле пиши ТОЛЬКО итоговое 
 - Текст переноси точно как в таблице. Номера аудиторий, разбитые переносом строки ("21-" и "45а", "22-" и "211"), склей в одно значение ("21-45а", "22-211"). Название группы пиши с дефисами, как в таблице ("мТМТ-25-2").
 - Ничего не выдумывай, пустые ячейки — пустая строка.`;
 
-// Римские цифры и обычные числа -> 1..6
 const ROMAN = { i: 1, ii: 2, iii: 3, iv: 4, v: 5, vi: 6 };
 const pairNum = (x) => {
   const v = x.pair ?? x.pair_number ?? x.num ?? x.lesson ?? x['пара'] ?? x['№'];
@@ -208,7 +206,64 @@ const extractJson = (text) => {
 async function callModel(image, mt, extra, structured) {
   const prompt = extra ? `${PROMPT}\n${extra}` : PROMPT;
 
-  // OpenRouter — основной провайдер
+  // OpenCode Console API (OpenAI-compatible Chat Completions)
+  if (process.env.OPENCODE_API_KEY) {
+    const baseUrl = (process.env.OPENCODE_BASE_URL ||
+      'https://opencode.ai/inference').replace(/\/+$/, '');
+    const model = process.env.OPENCODE_MODEL || 'deepseek-v4.1-flash';
+    const headers = {
+      'content-type': 'application/json',
+      Authorization: `Bearer ${process.env.OPENCODE_API_KEY}`
+    };
+
+    // Для OpenCode Go задайте постоянный OPENCODE_SESSION_ID.
+    if (process.env.OPENCODE_SESSION_ID) {
+      headers['x-opencode-session'] = process.env.OPENCODE_SESSION_ID;
+    }
+
+    const body = {
+      model,
+      max_tokens: 8000,
+      temperature: 0,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: prompt },
+          {
+            type: 'image_url',
+            image_url: {
+              url: `data:${mt};base64,${image}`,
+              detail: 'high'
+            }
+          }
+        ]
+      }]
+    };
+
+    const r = await fetch(
+      `${baseUrl}/openai/v1/chat/completions`,
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body)
+      }
+    );
+
+    const data = await r.json().catch(() => ({}));
+    const content = data.choices?.[0]?.message?.content;
+    const text = Array.isArray(content)
+      ? content.map((part) => part.text || '').join('')
+      : (typeof content === 'string' ? content : '');
+
+    return {
+      ok: r.ok,
+      status: r.status,
+      error: data.error?.message || data.message || 'Ошибка OpenCode API',
+      text
+    };
+                                   }  
+  
+  // OpenRouter — резервный провайдер
   if (process.env.OPENROUTER_API_KEY) {
     const body = {
       model: process.env.OPENROUTER_MODEL ||
@@ -398,7 +453,7 @@ async function callModel(image, mt, extra, structured) {
     return {
       ok: false,
       status: 500,
-      error: 'Не задан OPENROUTER_API_KEY в переменных окружения Vercel'
+      error: 'Не задан API-ключ: добавь OPENCODE_API_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY или ANTHROPIC_API_KEY в Vercel'
     };
   }
 
@@ -437,8 +492,7 @@ async function callModel(image, mt, extra, structured) {
     error: data.error?.message || 'Ошибка API',
     text: (data.content || []).map((b) => b.text || '').join('')
   };
-}
-
+  }
 // До 3 попыток при ошибках API или плохом JSON
 async function recognize(image, mt) {
   let structured = true;
