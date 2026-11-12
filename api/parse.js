@@ -1,3 +1,4 @@
+
 const { authed } = require('./_store');
 
 // Название группы из таблицы -> id группы на сайте
@@ -36,8 +37,8 @@ const PROMPT = `В каждом поле пиши ТОЛЬКО итоговое 
 1) № пары — РИМСКАЯ цифра (I–VI) в объединённой ячейке, одна на несколько строк подряд;
 2) учебная группа; 3) п/г старого занятия; 4) СТАРОЕ занятие: дисциплина, преподаватель, аудитория;
 5) п/г нового занятия; 6) НОВОЕ занятие: дисциплина, преподаватель, аудитория; 7) подпись (игнорируй).
-Верни ТОЛЬКО JSON-массив без пояснений и без markdown — по одному элементу на КАЖДУЮ строку таблицы, сверху вниз, ВСЕ группы подряд, ничего не пропуская:
-{"group":"мКСК-25-2","pair":5,"sub":0,"from":{"subject":"","teacher":"","room":""},"to":{"subject":"","teacher":"","room":""}}
+Верни JSON-объект вида {"rows":[...]} — по одному элементу на КАЖДУЮ строку таблицы, сверху вниз, ВСЕ группы подряд, ничего не пропуская:
+{"rows":[{"group":"мКСК-25-2","pair":5,"sub":0,"from":{"subject":"","teacher":"","room":""},"to":{"subject":"","teacher":"","room":""}}]}
 Правила:
 - "pair" — целое число 1–6. Римскую цифру пары записывай ВО ВСЕХ строках, которые к ней относятся (I=1, II=2, III=3, IV=4, V=5, VI=6): когда строка визуально находится внутри объединённой ячейки, бери цифру этой ячейки. Цифра стоит по центру объединённой ячейки по высоте, поэтому строки НАД цифрой относятся к ней же, а не к предыдущей паре: границы пар — это горизонтальные линии таблицы. Внимательно различай III и IV, IV и V, VI. Если цифры не видно (верх обрезанного листа) — null.
 - "sub" — подгруппа: 0 (вся группа), 1 или 2. Бери п/г старого занятия; если старое «Пары нет» — п/г нового.
@@ -46,6 +47,7 @@ const PROMPT = `В каждом поле пиши ТОЛЬКО итоговое 
 - Ничего не выдумывай, пустые ячейки — пустая строка.`;
 
 const ROMAN = { i: 1, ii: 2, iii: 3, iv: 4, v: 5, vi: 6 };
+
 const pairNum = (x) => {
   const v = x.pair ?? x.pair_number ?? x.num ?? x.lesson ?? x['пара'] ?? x['№'];
   const str = String(v ?? '').trim().toLowerCase()
@@ -166,333 +168,81 @@ const fixLesson = (l, warns, where) => {
   };
 };
 
-// ---------- Вызов модели ----------
-const ROW_SCHEMA = {
-  type: 'object',
-  properties: {
-    group: { type: 'string' },
-    pair: { type: 'integer', nullable: true },
-    sub: { type: 'integer' },
-    from: {
-      type: 'object',
-      properties: {
-        subject: { type: 'string' },
-        teacher: { type: 'string' },
-        room: { type: 'string' }
-      }
-    },
-    to: {
-      type: 'object',
-      nullable: true,
-      properties: {
-        subject: { type: 'string' },
-        teacher: { type: 'string' },
-        room: { type: 'string' }
-      }
-    }
-  },
-  required: ['group', 'sub']
-};
-
+// Повторные попытки
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const extractJson = (text) => {
   const t = String(text || '').replace(/```json|```/g, '').trim();
-  const a = t.indexOf('['), b = t.lastIndexOf(']');
-  return JSON.parse(a >= 0 && b > a ? t.slice(a, b + 1) : t);
+  const a = t.indexOf('{');
+  const b = t.lastIndexOf('}');
+  const parsed = JSON.parse(a >= 0 && b > a ? t.slice(a, b + 1) : t);
+  return Array.isArray(parsed) ? parsed : parsed.rows;
 };
 
-// Один запрос к выбранному провайдеру
+// Единственный API — Groq Qwen Vision
 async function callModel(image, mt, extra, structured) {
-  const prompt = extra ? `${PROMPT}\n${extra}` : PROMPT;
-
-  // OpenCode Console API (OpenAI-compatible Chat Completions)
-  if (process.env.OPENCODE_API_KEY) {
-    const baseUrl = (process.env.OPENCODE_BASE_URL ||
-      'https://opencode.ai/inference').replace(/\/+$/, '');
-    const model = process.env.OPENCODE_MODEL || 'deepseek-v4.1-flash';
-    const headers = {
-      'content-type': 'application/json',
-      Authorization: `Bearer ${process.env.OPENCODE_API_KEY}`
-    };
-
-    // Для OpenCode Go задайте постоянный OPENCODE_SESSION_ID.
-    if (process.env.OPENCODE_SESSION_ID) {
-      headers['x-opencode-session'] = process.env.OPENCODE_SESSION_ID;
-    }
-
-    const body = {
-      model,
-      max_tokens: 8000,
-      temperature: 0,
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'text', text: prompt },
-          {
-            type: 'image_url',
-            image_url: {
-              url: `data:${mt};base64,${image}`,
-              detail: 'high'
-            }
-          }
-        ]
-      }]
-    };
-
-    const r = await fetch(
-      `${baseUrl}/openai/v1/chat/completions`,
-      {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body)
-      }
-    );
-
-    const data = await r.json().catch(() => ({}));
-    const content = data.choices?.[0]?.message?.content;
-    const text = Array.isArray(content)
-      ? content.map((part) => part.text || '').join('')
-      : (typeof content === 'string' ? content : '');
-
-    return {
-      ok: r.ok,
-      status: r.status,
-      error: data.error?.message || data.message || 'Ошибка OpenCode API',
-      text
-    };
-                                   }  
-  
-  // OpenRouter — резервный провайдер
-  if (process.env.OPENROUTER_API_KEY) {
-    const body = {
-      model: process.env.OPENROUTER_MODEL ||
-        'nvidia/nemotron-3.5-super-vl:free',
-      max_tokens: 8000,
-      temperature: 0,
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'text', text: prompt },
-          {
-            type: 'image_url',
-            image_url: {
-              url: `data:${mt};base64,${image}`,
-              detail: 'high'
-            }
-          }
-        ]
-      }]
-    };
-
-    if (structured) {
-      body.response_format = {
-        type: 'json_schema',
-        json_schema: {
-          name: 'replacement_rows',
-          strict: true,
-          schema: {
-            type: 'object',
-            properties: {
-              rows: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  properties: {
-                    group: { type: 'string' },
-                    pair: { type: ['integer', 'null'] },
-                    sub: { type: 'integer' },
-                    from: {
-                      type: ['object', 'null'],
-                      properties: {
-                        subject: { type: 'string' },
-                        teacher: { type: 'string' },
-                        room: { type: 'string' }
-                      },
-                      required: ['subject', 'teacher', 'room'],
-                      additionalProperties: false
-                    },
-                    to: {
-                      type: ['object', 'null'],
-                      properties: {
-                        subject: { type: 'string' },
-                        teacher: { type: 'string' },
-                        room: { type: 'string' }
-                      },
-                      required: ['subject', 'teacher', 'room'],
-                      additionalProperties: false
-                    }
-                  },
-                  required: ['group', 'pair', 'sub', 'from', 'to'],
-                  additionalProperties: false
-                }
-              }
-            },
-            required: ['rows'],
-            additionalProperties: false
-          }
-        }
-      };
-    }
-
-    const r = await fetch(
-      'https://openrouter.ai/api/v1/chat/completions',
-      {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-          'HTTP-Referer':
-            process.env.OPENROUTER_SITE_URL || 'https://markbinon.io',
-          'X-Title': process.env.OPENROUTER_SITE_NAME || 'Markbinon'
-        },
-        body: JSON.stringify(body)
-      }
-    );
-
-    const data = await r.json();
-
-    return {
-      ok: r.ok,
-      status: r.status,
-      error: data.error?.message || 'Ошибка OpenRouter API',
-      text: data.choices?.[0]?.message?.content || ''
-    };
-  }
-
-  // OpenAI
-  if (process.env.OPENAI_API_KEY) {
-    const body = {
-      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
-      max_completion_tokens: 6000,
-      temperature: 0,
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'text', text: prompt },
-          {
-            type: 'image_url',
-            image_url: {
-              url: `data:${mt};base64,${image}`,
-              detail: 'high'
-            }
-          }
-        ]
-      }]
-    };
-
-    if (structured) {
-      body.response_format = { type: 'json_object' };
-    }
-
-    const r = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
-      },
-      body: JSON.stringify(body)
-    });
-
-    const data = await r.json();
-
-    return {
-      ok: r.ok,
-      status: r.status,
-      error: data.error?.message || 'Ошибка OpenAI API',
-      text: data.choices?.[0]?.message?.content || ''
-    };
-  }
-
-  // Gemini
-  if (process.env.GEMINI_API_KEY) {
-    const model = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
-    const generationConfig = { temperature: 0 };
-
-    if (structured) {
-      generationConfig.responseMimeType = 'application/json';
-      generationConfig.responseSchema = {
-        type: 'array',
-        items: ROW_SCHEMA
-      };
-    }
-
-    const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-      {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-goog-api-key': process.env.GEMINI_API_KEY
-        },
-        body: JSON.stringify({
-          contents: [{
-            parts: [
-              { inlineData: { mimeType: mt, data: image } },
-              { text: prompt }
-            ]
-          }],
-          generationConfig
-        })
-      }
-    );
-
-    const data = await r.json();
-
-    return {
-      ok: r.ok,
-      status: r.status,
-      error: data.error?.message || 'Ошибка Gemini API',
-      text: (data.candidates?.[0]?.content?.parts || [])
-        .map((p) => p.text || '').join('')
-    };
-  }
-
-  // Anthropic
-  if (!process.env.ANTHROPIC_API_KEY) {
+  if (!process.env.GROQ_API_KEY) {
     return {
       ok: false,
       status: 500,
-      error: 'Не задан API-ключ: добавь OPENCODE_API_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY или ANTHROPIC_API_KEY в Vercel'
+      error: 'Не задан GROQ_API_KEY в переменных окружения Vercel'
     };
   }
 
-  const r = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-api-key': process.env.ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01'
-    },
-    body: JSON.stringify({
-      model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-5-5',
-      max_tokens: 8000,
-      messages: [{
-        role: 'user',
-        content: [
-          {
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: mt,
-              data: image
-            }
-          },
-          { type: 'text', text: prompt }
-        ]
-      }]
-    })
-  });
+  const prompt = extra
+    ? `${PROMPT}\n${extra}`
+    : PROMPT;
 
-  const data = await r.json();
+  const body = {
+    model: 'qwen/qwen3.8-27b',
+    max_completion_tokens: 8000,
+    temperature: 0,
+    reasoning_effort: 'none',
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'text', text: prompt },
+        {
+          type: 'image_url',
+          image_url: {
+            url: `data:${mt};base64,${image}`,
+            detail: 'high'
+          }
+        }
+      ]
+    }]
+  };
+
+  if (structured) {
+    body.response_format = { type: 'json_object' };
+  }
+
+  const r = await fetch(
+    'https://api.groq.com/openai/v1/chat/completions',
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        Authorization: `Bearer ${process.env.GROQ_API_KEY}`
+      },
+      body: JSON.stringify(body)
+    }
+  );
+
+  const data = await r.json().catch(() => ({}));
+  const content = data.choices?.[0]?.message?.content;
+  const text = Array.isArray(content)
+    ? content.map((part) => part.text || '').join('')
+    : (typeof content === 'string' ? content : '');
 
   return {
     ok: r.ok,
     status: r.status,
-    error: data.error?.message || 'Ошибка API',
-    text: (data.content || []).map((b) => b.text || '').join('')
+    error: data.error?.message || data.message || 'Ошибка Groq API',
+    text
   };
-  }
+}
+
 // До 3 попыток при ошибках API или плохом JSON
 async function recognize(image, mt) {
   let structured = true;
@@ -533,10 +283,14 @@ async function recognize(image, mt) {
     lastText = res.text;
 
     try {
-      return { all: extractJson(res.text) };
+      const parsed = extractJson(res.text);
+      if (!Array.isArray(parsed)) {
+        throw new Error('Ответ не содержит массива rows');
+      }
+      return { all: parsed };
     } catch {
       extra =
-        'ВАЖНО: верни только валидный JSON-массив, без текста до и после него.';
+        'ВАЖНО: верни только JSON-объект формата {"rows":[...]}, без текста до и после него.';
     }
   }
 
@@ -547,7 +301,7 @@ async function recognize(image, mt) {
         raw: lastText
       }
     : {
-        error: lastErr?.error || 'Ошибка API',
+        error: lastErr?.error || 'Ошибка Groq API',
         status: 502
       };
 }
