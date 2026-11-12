@@ -384,6 +384,17 @@
     .sub-text { color: rgb(var(--text) / .85); }
     .sub-row.cx .sub-tag { color: rgb(var(--bad)); }
     .sub-row.cx .sub-text { color: rgb(var(--bad)); text-decoration: line-through; opacity: .85; }
+    .sub-row { align-items: center; }
+    .sub-tag { padding-top: 0; min-width: 2.7rem; padding: .18rem .5rem; border-radius: 9999px; text-align: center; white-space: nowrap; color: rgb(var(--warn)); background: rgb(var(--warn) / .16); }
+    .sub-row.cx .sub-tag { background: rgb(var(--bad) / .16); }
+    .sub-row.ok { background: rgb(var(--text) / .05); border-color: rgb(var(--line)); }
+    .sub-row.ok .sub-tag { color: rgb(var(--ok)); background: rgb(var(--ok) / .14); }
+    .sub-main { display: flex; flex-direction: column; min-width: 0; }
+    .sub-state { font-size: .72rem; font-weight: 800; letter-spacing: .02em; text-transform: uppercase; color: rgb(var(--warn)); }
+    .sub-row.cx .sub-state { color: rgb(var(--bad)); }
+    .sub-row.ok .sub-state { color: rgb(var(--ok)); }
+    .sub-row.cx .sub-text { text-decoration: none; opacity: .75; }
+    .sub-row.cx .sub-text s { text-decoration: line-through; }
     .meta { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .65rem; }
     .chip { display: inline-flex; align-items: flex-start; gap: .38rem; max-width: 100%; padding: .24rem .6rem; border-radius: 9999px; font-size: .78rem; line-height: 1.35; color: rgb(var(--text) / .78); background: rgb(var(--text) / .07); border: 1px solid rgb(var(--line)); overflow-wrap: anywhere; }
     .chip .ico { width: .88rem; height: .88rem; margin-top: .12rem; color: rgb(var(--accent)); opacity: .9; }
@@ -2959,6 +2970,27 @@ const SCHEDULE_MTOE_25_1 = {
       return out.sort((a, b) => a.num - b.num);
     }
 
+    // Что стоит в базовом расписании именно для подгруппы n (аудитория/преподаватель могут быть «по подгруппам»).
+    // none: true — у этой подгруппы пары по расписанию нет («только п/г 1: …»).
+    function baseForSub(it, n) {
+      const re = new RegExp('п\\s*/?\\s*г\\s*' + n + '(?!\\d)', 'i');
+      const reAny = /п\s*\/?\s*г\s*\d/i;
+      const only = /^только п\/г (\d+):\s*(.*)$/i.exec(it.room || '');
+      if (only && Number(only[1]) !== n) return { none: true };
+      const pick = (txt, seps) => {
+        txt = String(txt || '');
+        if (!reAny.test(txt)) return txt;
+        const part = txt.split(seps).map((x) => x.trim()).find((x) => re.test(x));
+        return part ? part.replace(/^.*?п\s*\/?\s*г\s*\d\s*[:\-–]?\s*/i, '').trim() : '';
+      };
+      return {
+        none: false,
+        name: it.name || '',
+        teacher: pick(it.teacher, /\s*\/\s*|\s*\|\s*/),
+        room: only ? only[2] : pick(it.room, /\s*\|\s*/),
+      };
+    }
+
     // У пары без строки в базовом расписании названия нет — подставляем понятную подпись.
     const pairTitle = (p) => p.name || (p.subs && p.subs.length ? 'Пара по подгруппам' : '');
 
@@ -3142,7 +3174,7 @@ const SCHEDULE_MTOE_25_1 = {
           const ongoing = isToday && !it.cancelled && it.start && nowMin >= toMin(it.start) && nowMin < toMin(it.end);
           const past = isToday && it.end && nowMin >= toMin(it.end);
           const subs = it.cancelled ? [] : (it.subs || []);
-          // Собираем статусы подгрупп за один проход, без двух временных массивов.
+          // Статусы подгрупп: у кого пары нет, у кого замена.
           const cancelledSubs = [], activeSubs = [];
           for (const sub of subs) {
             (sub.cancelled ? cancelledSubs : activeSubs).push(`п/г ${sub.sub}`);
@@ -3164,20 +3196,32 @@ const SCHEDULE_MTOE_25_1 = {
           const badges = [
             subBadge,
             it.cancelled ? '<span class="badge badge-bad">Пары нет</span>' : '',
-            subCx ? `<span class="badge badge-bad">Пары нет: ${esc(subCx)}</span>` : '',
+            subCx ? `<span class="badge badge-bad">Пары нет у ${esc(subCx)}</span>` : '',
             it.replaced ? `<span class="badge badge-warn">${subRp ? 'Замена: ' + esc(subRp) : 'Замена'}</span>` : '',
             ongoing ? '<span class="badge badge-live"><i></i>Идёт сейчас</span>' : '',
             it.num === nextNum ? '<span class="badge badge-today">Следующая</span>' : ''
           ].join('');
-          const chips = [
+          const chips = subs.length ? '' : [
             it.teacher ? `<span class="chip js-teacher">${svg('user')}${esc(it.teacher)}</span>` : '',
             roomText ? `<span class="chip js-room">${svg('pin')}${esc(roomText)}</span>` : ''
           ].join('');
-          const subsHtml = subs.length ? `<ul class="subs">${subs.map((s) => `
-                  <li class="sub-row${s.cancelled ? ' cx' : ''}">
-                    <span class="sub-tag">п/г ${esc(s.sub)}</span>
-                    <span class="sub-text">${s.cancelled ? 'Пары нет' : esc([s.name, s.teacher, s.room].filter(Boolean).join(' · '))}</span>
-                  </li>`).join('')}</ul>` : '';
+          // Если затронута подгруппа — показываем ОБЕ строки: у какой пары нет/замена и какая идёт как обычно.
+          const subRow = (n) => {
+            const base = baseForSub(it, n);
+            if (base.none) return '';
+            const s = subs.find((x) => x.sub === n);
+            const det = (o) => [o.name, o.teacher, o.room].filter(Boolean).map(esc).join(' · ');
+            if (s && s.cancelled) {
+              return `<li class="sub-row cx"><span class="sub-tag">п/г ${n}</span><span class="sub-main"><span class="sub-state">Пары нет</span><span class="sub-text"><s>${det({ name: base.name, teacher: base.teacher, room: base.room ? 'ауд. ' + base.room.replace(/^ауд\.?\s*/i, '') : '' })}</s></span></span></li>`;
+            }
+            if (s) {
+              const room = s.room || (base.room ? 'ауд. ' + base.room.replace(/^ауд\.?\s*/i, '') : '');
+              return `<li class="sub-row"><span class="sub-tag">п/г ${n}</span><span class="sub-main"><span class="sub-state">Замена</span><span class="sub-text">${det({ name: s.name || base.name, teacher: s.teacher, room })}</span></span></li>`;
+            }
+            const room = base.room ? 'ауд. ' + base.room.replace(/^ауд\.?\s*/i, '') : '';
+            return `<li class="sub-row ok"><span class="sub-tag">п/г ${n}</span><span class="sub-main"><span class="sub-state">Пара идёт</span><span class="sub-text">${det({ name: base.name, teacher: base.teacher, room })}</span></span></li>`;
+          };
+          const subsHtml = subs.length ? `<ul class="subs">${subRow(1)}${subRow(2)}</ul>` : '';
           listHtml += `
             <li class="${cls}" style="--i:${idx++}">
               <div class="pair-time"><b>${esc(fmt(it.start))}</b><span>${esc(fmt(it.end))}</span></div>
