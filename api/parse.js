@@ -32,19 +32,32 @@ const norm = (s) => String(s || '').toLowerCase()
   .replace(/[kcmptoeayxhbsn]/g, (ch) => LAT[ch])
   .replace(/[^а-яё0-9]/g, '');
 
-const PROMPT = `В каждом поле пиши ТОЛЬКО итоговое значение с картинки — без рассуждений, вариантов, извинений и пояснений.
-На изображении лист замен в расписании (фото таблицы). Столбцы слева направо:
-1) № пары — РИМСКАЯ цифра (I–VI) в объединённой ячейке, одна на несколько строк подряд;
-2) учебная группа; 3) п/г старого занятия; 4) СТАРОЕ занятие: дисциплина, преподаватель, аудитория;
-5) п/г нового занятия; 6) НОВОЕ занятие: дисциплина, преподаватель, аудитория; 7) подпись (игнорируй).
-Верни JSON-объект вида {"rows":[...]} — по одному элементу на КАЖДУЮ строку таблицы, сверху вниз, ВСЕ группы подряд, ничего не пропуская:
+const PROMPT = `На изображении лист замен в расписании (фото таблицы).
+Столбцы слева направо:
+1) № пары — РИМСКАЯ цифра (I–VI) в объединённой ячейке;
+2) учебная группа;
+3) п/г старого занятия;
+4) СТАРОЕ занятие: дисциплина, преподаватель, аудитория;
+5) п/г нового занятия;
+6) НОВОЕ занятие: дисциплина, преподаватель, аудитория;
+7) подпись (игнорируй).
+
+Верни ВСЕ строки таблицы сверху вниз, ничего не пропускай.
+Ответ строго в формате JSON-объекта:
 {"rows":[{"group":"мКСК-25-2","pair":5,"sub":0,"from":{"subject":"","teacher":"","room":""},"to":{"subject":"","teacher":"","room":""}}]}
+
 Правила:
-- "pair" — целое число 1–6. Римскую цифру пары записывай ВО ВСЕХ строках, которые к ней относятся (I=1, II=2, III=3, IV=4, V=5, VI=6): когда строка визуально находится внутри объединённой ячейки, бери цифру этой ячейки. Цифра стоит по центру объединённой ячейки по высоте, поэтому строки НАД цифрой относятся к ней же, а не к предыдущей паре: границы пар — это горизонтальные линии таблицы. Внимательно различай III и IV, IV и V, VI. Если цифры не видно (верх обрезанного листа) — null.
-- "sub" — подгруппа: 0 (вся группа), 1 или 2. Бери п/г старого занятия; если старое «Пары нет» — п/г нового.
-- Если в новой части «Пары нет», то "to": null. Если «Пары нет» в старой части, то "from": {"subject":"","teacher":"","room":""}.
-- Текст переноси точно как в таблице. Номера аудиторий, разбитые переносом строки ("21-" и "45а", "22-" и "211"), склей в одно значение ("21-45а", "22-211"). Название группы пиши с дефисами, как в таблице ("мТМТ-25-2").
-- Ничего не выдумывай, пустые ячейки — пустая строка.`;
+- pair — целое число 1–6. I=1, II=2, III=3, IV=4, V=5, VI=6.
+- Записывай номер пары во ВСЕХ строках, относящихся к объединённой ячейке. Строки над цифрой также относятся к этой ячейке.
+- Если цифра не видна — pair: null.
+- sub — подгруппа: 0 (вся группа), 1 или 2. Бери п/г старого занятия; если старое «Пары нет» — п/г нового.
+- Если в новой части «Пары нет», то to: null.
+- Если в старой части «Пары нет», то from: {"subject":"","teacher":"","room":""}.
+- Название группы пиши с дефисами, как в таблице.
+- Текст переноси точно как в таблице.
+- Номера аудиторий, разбитые переносом строки ("21-" и "45а", "22-" и "211"), склеивай ("21-45а", "22-211").
+- Ничего не выдумывай. Пустые ячейки — пустая строка.
+- Не добавляй пояснений, markdown или текста вне JSON.`;
 
 const ROMAN = { i: 1, ii: 2, iii: 3, iv: 4, v: 5, vi: 6 };
 
@@ -53,8 +66,7 @@ const pairNum = (x) => {
   const str = String(v ?? '').trim().toLowerCase()
     .replace(/[іl1]/g, (c) => (c === '1' ? '1' : 'i'))
     .replace(/[vv]/g, 'v');
-  const rm = str.match(/^[ivx]+$/);
-  if (rm && ROMAN[str]) return ROMAN[str];
+  if (ROMAN[str]) return ROMAN[str];
   const m = str.match(/\d+/);
   const n = m ? parseInt(m[0], 10) : 0;
   return n >= 1 && n <= 6 ? n : 0;
@@ -168,19 +180,30 @@ const fixLesson = (l, warns, where) => {
   };
 };
 
-// Повторные попытки
+// ---------- Groq / Qwen ----------
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const extractJson = (text) => {
-  const t = String(text || '').replace(/```json|```/g, '').trim();
-  const a = t.indexOf('{');
-  const b = t.lastIndexOf('}');
-  const parsed = JSON.parse(a >= 0 && b > a ? t.slice(a, b + 1) : t);
-  return Array.isArray(parsed) ? parsed : parsed.rows;
+  const t = String(text || '')
+    .replace(/```json/gi, '')
+    .replace(/```/g, '')
+    .trim();
+
+  const start = t.indexOf('{');
+  const end = t.lastIndexOf('}');
+  const source = start >= 0 && end > start
+    ? t.slice(start, end + 1)
+    : t;
+
+  const parsed = JSON.parse(source);
+
+  if (Array.isArray(parsed)) return parsed;
+  if (Array.isArray(parsed.rows)) return parsed.rows;
+
+  throw new Error('В ответе нет массива rows');
 };
 
-// Единственный API — Groq Qwen Vision
-async function callModel(image, mt, extra, structured) {
+async function callModel(image, mt, extra) {
   if (!process.env.GROQ_API_KEY) {
     return {
       ok: false,
@@ -189,15 +212,14 @@ async function callModel(image, mt, extra, structured) {
     };
   }
 
-  const prompt = extra
-    ? `${PROMPT}\n${extra}`
-    : PROMPT;
+  const prompt = extra ? `${PROMPT}\n${extra}` : PROMPT;
 
   const body = {
     model: 'qwen/qwen3.8-27b',
     max_completion_tokens: 8000,
     temperature: 0,
     reasoning_effort: 'none',
+    response_format: { type: 'json_object' },
     messages: [{
       role: 'user',
       content: [
@@ -212,10 +234,6 @@ async function callModel(image, mt, extra, structured) {
       ]
     }]
   };
-
-  if (structured) {
-    body.response_format = { type: 'json_object' };
-  }
 
   const r = await fetch(
     'https://api.groq.com/openai/v1/chat/completions',
@@ -243,60 +261,51 @@ async function callModel(image, mt, extra, structured) {
   };
 }
 
-// До 3 попыток при ошибках API или плохом JSON
 async function recognize(image, mt) {
-  let structured = true;
   let extra = '';
   let lastErr = null;
   let lastText = '';
 
   for (let attempt = 0; attempt < 3; attempt++) {
-    let res;
+    let result;
 
     try {
-      res = await callModel(image, mt, extra, structured);
+      result = await callModel(image, mt, extra);
     } catch (e) {
-      lastErr = {
-        status: 502,
-        error: 'Сеть: ' + e.message
-      };
-      await sleep(800 * (attempt + 1));
+      lastErr = { error: 'Сеть: ' + e.message, status: 502 };
+      await sleep(1000 * (attempt + 1));
       continue;
     }
 
-    if (!res.ok) {
-      lastErr = res;
+    if (!result.ok) {
+      lastErr = result;
+      console.error('GROQ API ERROR:', result.status, result.error);
 
-      if (res.status === 400 && structured) {
-        structured = false;
+      if (result.status === 429 || result.status >= 500) {
+        await sleep(1500 * (attempt + 1));
         continue;
       }
 
-      if (res.status === 429 || res.status >= 500) {
-        await sleep(1200 * (attempt + 1));
-        continue;
-      }
-
-      return { error: res.error, status: 502 };
+      return { error: result.error, status: 502 };
     }
 
-    lastText = res.text;
+    lastText = result.text;
 
     try {
-      const parsed = extractJson(res.text);
-      if (!Array.isArray(parsed)) {
-        throw new Error('Ответ не содержит массива rows');
-      }
-      return { all: parsed };
-    } catch {
-      extra =
-        'ВАЖНО: верни только JSON-объект формата {"rows":[...]}, без текста до и после него.';
+      const all = extractJson(result.text);
+      console.log('GROQ OCR TOTAL:', all.length);
+      console.log('GROQ OCR DEBUG:', JSON.stringify(all.slice(0, 10)));
+      return { all };
+    } catch (e) {
+      console.error('GROQ JSON ERROR:', e.message);
+      console.error('GROQ RAW RESPONSE:', result.text);
+      extra = 'Предыдущий ответ не подошёл. Верни строго JSON-объект вида {"rows":[...]}. Внутри rows должны быть все строки таблицы.';
     }
   }
 
   return lastText
     ? {
-        error: 'Не удалось разобрать ответ',
+        error: 'Не удалось разобрать ответ модели',
         status: 502,
         raw: lastText
       }
@@ -306,8 +315,11 @@ async function recognize(image, mt) {
       };
 }
 
+// ---------- Обработчик ----------
 module.exports = async (req, res) => {
-  if (req.method !== 'POST') return res.status(405).end();
+  if (req.method !== 'POST') {
+    return res.status(405).end();
+  }
 
   if (!authed(req)) {
     return res.status(401).json({ error: 'Неверный пароль' });
