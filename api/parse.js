@@ -74,11 +74,12 @@ const PROMPT = `В каждом поле пиши ТОЛЬКО итоговое 
 2) учебная группа; 3) п/г старого занятия; 4) СТАРОЕ занятие: дисциплина, преподаватель, аудитория;
 5) п/г нового занятия; 6) НОВОЕ занятие: дисциплина, преподаватель, аудитория; 7) подпись (игнорируй).
 Верни ТОЛЬКО JSON-массив без пояснений и без markdown — по одному элементу на КАЖДУЮ строку таблицы, сверху вниз, ВСЕ группы подряд, ничего не пропуская:
-{"group":"мКСК-25-2","pair":5,"sub":0,"from":{"subject":"","teacher":"","room":""},"to":{"subject":"","teacher":"","room":""}}
+{"group":"мКСК-25-2","pair":5,"sub_from_raw":"","sub_from":0,"sub_to_raw":"","sub_to":0,"from":{"subject":"","teacher":"","room":""},"to":{"subject":"","teacher":"","room":""}}
 Правила:
 - "pair" — целое число 1–6. Римскую цифру пары записывай ВО ВСЕХ строках, которые к ней относятся (I=1, II=2, III=3, IV=4, V=5, VI=6): когда строка визуально находится внутри объединённой ячейки, бери цифру этой ячейки. Цифра стоит по центру объединённой ячейки по высоте, поэтому строки НАД цифрой относятся к ней же, а не к предыдущей паре: границы пар — это горизонтальные линии таблицы. Внимательно различай III и IV, IV и V, VI. Если цифры не видно (верх обрезанного листа) — null.
-- "sub" — подгруппа: 0 (вся группа), 1 или 2. Бери п/г старого занятия; если старое «Пары нет» — п/г нового.
-- Если в новой части «Пары нет», то "to": null. Если «Пары нет» в старой части, то "from": {"subject":"","teacher":"","room":""}.
+- Подгруппы. Столбцы 3 и 5 — узкие, в них стоит «1», «2», «п/г 1», «п/г 2» или пусто/«-». Сначала дословно перепиши содержимое ячейки: "sub_from_raw" — столбец 3, "sub_to_raw" — столбец 5 (пустая строка, если ячейка пуста). Затем "sub_from"/"sub_to": 1 или 2 по этой записи, 0 — только если ячейка действительно пуста (вся группа). Ничего не додумывай по соседним строкам.
+- Если у одной группы в одной паре идут две строки подряд (по одной на п/г 1 и п/г 2) — это ДВА отдельных элемента, не склеивай их и не пропускай вторую. Подгруппа может быть указана и внутри текста занятия («п/г 1», «1 п/г», «(1 подгр.)») — тогда тоже заполни sub_from/sub_to.
+- Если в новой части «Пары нет», то "to": null и "sub_to": 0. Если «Пары нет» в старой части, то "from": {"subject":"","teacher":"","room":""}.
 - Текст переноси точно как в таблице. Номера аудиторий, разбитые переносом строки ("21-" и "45а", "22-" и "211"), склей в одно значение ("21-45а", "22-211"). Название группы пиши с дефисами, как в таблице ("мТМТ-25-2").
 - Ничего не выдумывай, пустые ячейки — пустая строка.`;
 
@@ -94,6 +95,27 @@ const pairNum = (x) => {
   const m = str.match(/\d+/);
   const n = m ? parseInt(m[0], 10) : 0;
   return n >= 1 && n <= 6 ? n : 0;
+};
+
+
+// Подгруппа: берём число модели, но сверяем с «сырым» текстом ячейки и текстом самого занятия
+const subFromText = (...parts) => {
+  for (const p of parts) {
+    const t = String(p || '').toLowerCase();
+    const m = t.match(/(?:п\s*\/?\s*г\w*\.?\s*|подгр\w*\.?\s*)([12])(?!\d)/) || t.match(/(?<![\d-])([12])\s*(?:п\s*\/?\s*г|подгр)/) || t.match(/^\s*([12])\s*$/);
+    if (m) return Number(m[1]);
+  }
+  return 0;
+};
+const subNum = (x) => {
+  const asNum = (v) => { const n = Number(v); return n === 1 || n === 2 ? n : 0; };
+  const from = asNum(x.sub_from) || subFromText(x.sub_from_raw);
+  const to = asNum(x.sub_to) || subFromText(x.sub_to_raw);
+  const legacy = asNum(x.sub) || asNum(x.subgroup);
+  // п/г старого занятия главнее; если старого нет («Пары нет») — берём п/г нового
+  const hasOld = x.from && (x.from.subject || x.from.teacher || x.from.room);
+  return (hasOld ? from || to : to || from) || legacy
+    || subFromText(x.from && x.from.room, x.from && x.from.teacher, x.from && x.from.subject);
 };
 
 // ---------- Справочник преподавателей (для исправления ошибок распознавания) ----------
@@ -231,11 +253,14 @@ const ROW_SCHEMA = {
   properties: {
     group: { type: 'string' },
     pair: { type: 'integer', nullable: true },
-    sub: { type: 'integer' },
+    sub_from_raw: { type: 'string' },
+    sub_from: { type: 'integer', enum: [0, 1, 2] },
+    sub_to_raw: { type: 'string' },
+    sub_to: { type: 'integer', enum: [0, 1, 2] },
     from: { type: 'object', properties: { subject: { type: 'string' }, teacher: { type: 'string' }, room: { type: 'string' } } },
     to: { type: 'object', nullable: true, properties: { subject: { type: 'string' }, teacher: { type: 'string' }, room: { type: 'string' } } },
   },
-  required: ['group', 'sub'],
+  required: ['group', 'pair', 'sub_from_raw', 'sub_from', 'sub_to_raw', 'sub_to'],
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -361,7 +386,7 @@ module.exports = async (req, res) => {
       return {
         group,
         pair: x._pair,
-        sub: Number(x.sub) || 0,
+        sub: subNum(x),
         from: fixLesson(x.from, warnings, where),
         to: x.to ? fixLesson(x.to, warnings, where) : null,
       };
