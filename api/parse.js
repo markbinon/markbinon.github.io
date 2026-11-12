@@ -1,7 +1,6 @@
 
 const { authed } = require('./_store');
 
-// Название группы из таблицы -> id группы на сайте
 const GROUPS = {
   'мкск251': 'ksk-25-1', 'мкск252': 'ksk-25-2',
   'мбу251': 'bu-25-1', 'мбуп251': 'bup-25-1',
@@ -56,8 +55,7 @@ const PROMPT = `На изображении лист замен в распис�
 - Название группы пиши с дефисами, как в таблице.
 - Текст переноси точно как в таблице.
 - Номера аудиторий, разбитые переносом строки ("21-" и "45а", "22-" и "211"), склеивай ("21-45а", "22-211").
-- Ничего не выдумывай. Пустые ячейки — пустая строка.
-- Не добавляй пояснений, markdown или текста вне JSON.`;
+- Ничего не выдумывай. Пустые ячейки — пустая строка.`;
 
 const ROMAN = { i: 1, ii: 2, iii: 3, iv: 4, v: 5, vi: 6 };
 
@@ -66,13 +64,14 @@ const pairNum = (x) => {
   const str = String(v ?? '').trim().toLowerCase()
     .replace(/[іl1]/g, (c) => (c === '1' ? '1' : 'i'))
     .replace(/[vv]/g, 'v');
+
   if (ROMAN[str]) return ROMAN[str];
+
   const m = str.match(/\d+/);
   const n = m ? parseInt(m[0], 10) : 0;
   return n >= 1 && n <= 6 ? n : 0;
 };
 
-// Справочник преподавателей
 const TEACHERS = [
   'Афанасьева Л.В.', 'Борисова М.В.', 'Брохоцкая Е.М.',
   'Бухарова Н.А.', 'Верхозин А.Д.', 'Витт Т.Л.',
@@ -97,9 +96,12 @@ const lev = (a, b) => {
   const m = a.length, n = b.length;
   if (!m) return n;
   if (!n) return m;
+
   let prev = Array.from({ length: n + 1 }, (_, j) => j);
+
   for (let i = 1; i <= m; i++) {
     const cur = [i];
+
     for (let j = 1; j <= n; j++) {
       cur[j] = Math.min(
         prev[j] + 1,
@@ -107,16 +109,20 @@ const lev = (a, b) => {
         prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
       );
     }
+
     prev = cur;
   }
+
   return prev[n];
 };
 
 const splitTeacher = (t) => {
   const m = String(t).trim().replace(/\s+/g, ' ')
     .match(/^([^\s.]+)\s*(.*)$/);
+
   const sur = (m ? m[1] : '').toLowerCase().replace(/ё/g, 'е');
   const ini = (m ? m[2] : '').toLowerCase().replace(/[^а-яё]/g, '');
+
   return { sur, ini };
 };
 
@@ -128,51 +134,69 @@ const FIO_RE = /[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?\s+[А-ЯЁ]\.\s?[А
 
 const fixTeacher = (raw) => {
   let t = String(raw || '').trim();
+
   if (t.length > 30 || /[?!]|извин|или |нет,/i.test(t)) {
     const all = t.match(FIO_RE);
     if (all) t = all[all.length - 1].replace(/\s+/g, ' ');
   }
+
   if (!t || t === '-' || t === '--') return { value: '' };
+
   const r = splitTeacher(t);
   if (!r.sur) return { value: t };
+
   const exact = TEACHER_INDEX.filter((k) =>
     k.sur === r.sur && (!r.ini || k.ini === r.ini)
   );
+
   if (exact.length === 1) return { value: exact[0].full };
   if (exact.length > 1) return { value: t };
+
   const maxD = r.sur.length >= 8 ? 2 : 1;
+
   const cand = TEACHER_INDEX
     .map((k) => ({ k, d: lev(r.sur, k.sur) }))
     .filter((x) => x.d <= maxD && (!r.ini || x.k.ini === r.ini))
     .sort((a, b) => a.d - b.d);
+
   if (cand.length && (cand.length === 1 || cand[0].d < cand[1].d)) {
     return { value: cand[0].k.full };
   }
+
   return { value: t, warn: `неизвестный преподаватель: ${t}` };
 };
 
 const fixRoom = (raw) => {
-  raw = String(raw || '').trim().replace(/^ауд(итория|\.)?\s*/i, '');
+  raw = String(raw || '').trim()
+    .replace(/^ауд(итория|\.)?\s*/i, '');
+
   if (raw.length > 14 && /[?!]|извин|нет,|или |смотрим/i.test(raw)) {
     const all = raw.match(/\b\d{2}\s?-\s?\d{2,3}[а-яa-z]?(?![а-яa-z\d])/gi);
     if (all) raw = all[all.length - 1];
   }
+
   const text = raw.replace(/[–—−]/g, '-').replace(/\s+/g, ' ').trim();
   let s = text.replace(/\s*-\s*/g, '-').replace(/\s+/g, '');
+
   if (!s || /^-+$/.test(s)) return '';
+
   const m = s.match(/^([0-9OoIl]{2})-([0-9OoIl]{2,3})([A-Za-zА-Яа-я]?)$/);
+
   if (m) {
     const dig = (x) => x.replace(/[Oo]/g, '0').replace(/[Il]/g, '1');
     const suf = m[3].toLowerCase().replace('a', 'а');
     return `${dig(m[1])}-${dig(m[2])}${suf}`;
   }
+
   return text;
 };
 
 const fixLesson = (l, warns, where) => {
   if (!l || typeof l !== 'object') return l || null;
+
   const t = fixTeacher(l.teacher);
   if (t.warn) warns.push(`${where}: ${t.warn}`);
+
   return {
     subject: String(l.subject || '').trim(),
     teacher: t.value,
@@ -180,8 +204,35 @@ const fixLesson = (l, warns, where) => {
   };
 };
 
-// ---------- Groq / Qwen ----------
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Определяем, сколько ждать после ограничения Groq
+const getRetryDelay = (headers, errorMessage, attempt) => {
+  const resetHeader =
+    headers?.get('x-ratelimit-reset-tokens') ||
+    headers?.get('retry-after');
+
+  let seconds = NaN;
+
+  if (resetHeader) {
+    const match = String(resetHeader).match(/[\d.]+/);
+    if (match) seconds = Number(match[0]);
+  }
+
+  if (!Number.isFinite(seconds)) {
+    const match = String(errorMessage || '')
+      .match(/try again in\s+([\d.]+)\s*s/i);
+
+    if (match) seconds = Number(match[1]);
+  }
+
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    seconds = Math.min(3 * (attempt + 1), 15);
+  }
+
+  // Дополнительная секунда, чтобы лимит успел обновиться
+  return Math.min(30000, Math.max(1000, seconds * 1000 + 1000));
+};
 
 const extractJson = (text) => {
   const t = String(text || '')
@@ -191,6 +242,7 @@ const extractJson = (text) => {
 
   const start = t.indexOf('{');
   const end = t.lastIndexOf('}');
+
   const source = start >= 0 && end > start
     ? t.slice(start, end + 1)
     : t;
@@ -249,6 +301,7 @@ async function callModel(image, mt, extra) {
 
   const data = await r.json().catch(() => ({}));
   const content = data.choices?.[0]?.message?.content;
+
   const text = Array.isArray(content)
     ? content.map((part) => part.text || '').join('')
     : (typeof content === 'string' ? content : '');
@@ -257,7 +310,8 @@ async function callModel(image, mt, extra) {
     ok: r.ok,
     status: r.status,
     error: data.error?.message || data.message || 'Ошибка Groq API',
-    text
+    text,
+    retryAfterMs: getRetryDelay(r.headers, data.error?.message, 0)
   };
 }
 
@@ -266,39 +320,65 @@ async function recognize(image, mt) {
   let lastErr = null;
   let lastText = '';
 
-  for (let attempt = 0; attempt < 3; attempt++) {
+  // До 6 попыток, включая ожидание при rate limit
+  for (let attempt = 0; attempt < 6; attempt++) {
     let result;
 
     try {
       result = await callModel(image, mt, extra);
     } catch (e) {
-      lastErr = { error: 'Сеть: ' + e.message, status: 502 };
-      await sleep(1000 * (attempt + 1));
+      lastErr = {
+        status: 502,
+        error: 'Сеть: ' + e.message
+      };
+
+      await sleep(1500 * (attempt + 1));
       continue;
     }
 
     if (!result.ok) {
       lastErr = result;
+
       console.error('GROQ API ERROR:', result.status, result.error);
 
-      if (result.status === 429 || result.status >= 500) {
-        await sleep(1500 * (attempt + 1));
+      if (result.status === 429) {
+        const wait = getRetryDelay(
+          null,
+          result.error,
+          attempt
+        );
+
+        console.log('GROQ RATE LIMIT: ожидание', wait, 'мс');
+
+        // Небольшой случайный сдвиг, чтобы повторные запросы не совпадали
+        await sleep(wait + Math.floor(Math.random() * 700));
         continue;
       }
 
-      return { error: result.error, status: 502 };
+      if (result.status >= 500) {
+        await sleep(2000 * (attempt + 1));
+        continue;
+      }
+
+      return {
+        error: result.error,
+        status: 502
+      };
     }
 
     lastText = result.text;
 
     try {
       const all = extractJson(result.text);
+
       console.log('GROQ OCR TOTAL:', all.length);
       console.log('GROQ OCR DEBUG:', JSON.stringify(all.slice(0, 10)));
+
       return { all };
     } catch (e) {
       console.error('GROQ JSON ERROR:', e.message);
       console.error('GROQ RAW RESPONSE:', result.text);
+
       extra = 'Предыдущий ответ не подошёл. Верни строго JSON-объект вида {"rows":[...]}. Внутри rows должны быть все строки таблицы.';
     }
   }
@@ -310,12 +390,11 @@ async function recognize(image, mt) {
         raw: lastText
       }
     : {
-        error: lastErr?.error || 'Ошибка Groq API',
+        error: lastErr?.error || 'Ошибка API после нескольких попыток',
         status: 502
       };
 }
 
-// ---------- Обработчик ----------
 module.exports = async (req, res) => {
   if (req.method !== 'POST') {
     return res.status(405).end();
@@ -350,6 +429,7 @@ module.exports = async (req, res) => {
 
   // Восстановление номера пары в объединённых ячейках
   const nums = all.map((x) => pairNum(x));
+
   const known_i = nums
     .map((n, i) => (n ? i : -1))
     .filter((i) => i >= 0);
