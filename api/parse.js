@@ -30,58 +30,58 @@ const norm = (s) => String(s || '').toLowerCase()
   .replace(/[kcmptoeayxhbsn]/g, (ch) => LAT[ch])
   .replace(/[^а-яё0-9]/g, '');
 
-const PROMPT = `Ты распознаёшь фотографию таблицы замен в расписании колледжа.
+const PROMPT = `Ты — система распознавания таблиц. На фото «Лист замены действующего расписания» колледжа. Это может быть одна страница из нескольких; снято под углом, с перекосом, бликами и фоном вокруг. Перенеси КАЖДУЮ строку таблицы в JSON. Ничего не выдумывай и не исправляй: переписывай то, что напечатано.
 
-ОЧЕНЬ ВАЖНО: НЕ ПРИДУМЫВАЙ ДАННЫЕ. НЕ ЗАПОЛНЯЙ ПУСТЫЕ ЯЧЕЙКИ ФРАЗОЙ «Пары нет».
-
+## Устройство таблицы
 Столбцы слева направо:
-1) № пары — римская цифра I–VI в объединённой ячейке;
-2) учебная группа;
-3) п/г старого занятия;
-4) СТАРОЕ занятие: дисциплина, преподаватель, аудитория;
-5) п/г нового занятия;
-6) НОВОЕ занятие: дисциплина, преподаватель, аудитория;
-7) подпись (игнорируй).
+1. № пары — римская цифра (I–VI) в объединённой ячейке, одна на несколько строк;
+2. Учебная группа (например «мБУп-26-1»);
+3. п/г СТАРОГО занятия: 0, 1 или 2;
+4. Дисциплина старого занятия;
+5. ФИО преподавателя;
+6. Аудитория;
+7. п/г НОВОГО занятия: 0, 1 или 2;
+8. Дисциплина нового занятия;
+9. ФИО преподавателя;
+10. Аудитория;
+11. «Ознакомлен» (подпись) — игнорируй.
+Левая часть (3–6) — что было по расписанию, правая (7–10) — на что заменили.
+Всё вне таблицы игнорируй: шапку, дату, рукописные пометки («Верхняя неделя»), подписи «Диспетчер» и «Зам. декана», булавки, стол.
 
-Верни ВСЕ строки таблицы сверху вниз.
+## Как разбирать строки
+- Одна строка = пространство между двумя соседними горизонтальными линиями таблицы. Всё внутри — ОДНА запись. Элементов в ответе столько же, сколько названий групп в столбце 2.
+- Текст в ячейках прижат к НИЗУ: название группы, цифра п/г, фамилия и номер аудитории стоят на нижней строке ячейки, а длинное название дисциплины растёт вверх. Поэтому строку определяют линии, а не то, что стоит выше или ниже. Фото кривое: линии наклонены, и левая и правая половины одной строки могут оказаться на разной высоте. Сопоставляй части по линиям таблицы, а не по горизонтали экрана.
+- Каждая строка — отдельный элемент, даже если группа повторяется (в разных парах или двумя строками для п/г 1 и п/г 2). Ничего не склеивай и не пропускай. Не добавляй строк, которых нет в таблице.
 
-Формат ответа — строго JSON-объект:
-{"rows":[{"group":"мКСК-25-2","pair":5,"sub":0,"from":{"subject":"","teacher":"","room":""},"to":{"subject":"","teacher":"","room":""}}]}
+## Номер пары
+- Пары разделены толстыми горизонтальными линиями, они проходят и через столбец 1. Блок между двумя такими линиями — одна пара. Римская цифра стоит посередине блока по высоте, поэтому строки ВЫШЕ цифры относятся к той же паре, что и строки НИЖЕ неё.
+- "block" — порядковый номер блока на этом фото сверху вниз (1, 2, 3 …). "pair" — цифра этого блока (I=1, II=2, III=3, IV=4, V=5, VI=6), одинаковая у всех строк блока. Внимательно различай III/IV, IV/V, V/VI. Не путай номер пары с номером аудитории.
+- Если цифры блока на этом фото не видно (блок оборван краем листа) — "pair": null.
 
-ПРАВИЛА РАСПОЗНАВАНИЯ:
+## Подгруппы
+Столбцы 3 и 7 узкие, в каждом одна цифра. Сначала перепиши её дословно: "sub_from_raw" (столбец 3) и "sub_to_raw" (столбец 7). Затем число: "sub_from" / "sub_to" — 0, 1 или 2. Значения слева и справа могут различаться (например 2 слева и 0 справа), это нормально. Не додумывай цифру по соседним строкам. Если ячейка пуста — "" и 0.
 
-1. Читай каждую строку отдельно. Не переноси предметы, преподавателей и аудитории из соседних строк.
-2. Не додумывай текст по смыслу. Если текст неразборчив или ячейка пустая — оставляй соответствующее поле пустой строкой.
-3. Фразу «Пары нет» разрешено использовать ТОЛЬКО если именно эти слова отчётливо напечатаны в соответствующей ячейке на фотографии.
-4. Пустая ячейка, прочерк, отсутствие предмета или отсутствие преподавателя НЕ означают «Пары нет».
-5. Если в новой части занятия явно написано «Пары нет», тогда to: null.
-6. Если в старой части занятия явно написано «Пары нет», тогда from: {"subject":"","teacher":"","room":""}.
-7. Если ты не уверен, написано ли «Пары нет», НЕ используй эту фразу. Оставь поля пустыми.
-8. Не заполняй все строки одной и той же фразой. Каждую ячейку проверяй отдельно по изображению.
-9. Не создавай дополнительные строки, которых нет в таблице.
+## Тексты и «Пары нет»
+- «Пары нет» пиши ТОЛЬКО если эти слова отчётливо напечатаны в ячейке. Пустая ячейка или прочерк — это НЕ «Пары нет». Не заполняй этой фразой строки «на всякий случай»: каждую ячейку проверяй отдельно.
+- «Пары нет» слева: "from" с пустыми строками. «Пары нет» справа: "to": null (sub_to всё равно запиши по ячейке).
+- Перенос строки внутри ячейки — это пробел. Если строка заканчивается дефисом, склей без пробела: «Организационно-» + «технологическое» → «Организационно-технологическое»; «21-» + «45а» → «21-45а»; «21-» + «001-» + «1» → «21-001-1».
+- Аудитория — как напечатано: «21-28», «22-211», «21-45а» (буква «а» кириллическая), «21-001», «21-001-1». Короткие номера («37», «23») оставь без префикса. «--» или «–» значит «нет аудитории» → "".
+- Преподаватель — «Фамилия И.О.» как напечатано (Клеймёнов В.Ф., Шкилёва В.Е.). Не подбирай похожие фамилии.
+- Группу пиши ровно как в таблице, с дефисами и регистром: мБУ-25-1, мБУп-26-1, мИСПР-23-3, мКСК-24-2, мМТО-23-1, мМТОЭ-24-1, мРУП-26-2, мСПР-25-2, мТМТ-26-3. Это разные группы: мБУ и мБУп, мМТО и мМТОЭ. Группы 23 и 24 годов тоже включай.
+- Дисциплины переписывай полностью. Кавычки оставь как есть; «Web-технологии» — с латинской W.
 
-НОМЕР ПАРЫ:
-- pair — целое число от 1 до 6.
-- I=1, II=2, III=3, IV=4, V=5, VI=6.
-- Номер пары записывай во ВСЕХ строках, относящихся к объединённой ячейке.
-- Строки над цифрой также могут относиться к этой ячейке.
-- Если цифра не видна и её нельзя достоверно определить — pair: null.
+## Ответ
+Верни ТОЛЬКО JSON-объект {"rows":[...]}: без markdown, пояснений и рассуждений. Порядок строк — сверху вниз. Формат элемента:
+{"block":1,"pair":1,"group":"","sub_from_raw":"","sub_from":0,"sub_to_raw":"","sub_to":0,"from":{"subject":"","teacher":"","room":""},"to":{"subject":"","teacher":"","room":""}}
 
-ПОДГРУППА:
-- sub — 0 (вся группа), 1 или 2.
-- Бери номер подгруппы старого занятия.
-- Если в старом занятии явно написано «Пары нет», бери номер подгруппы нового занятия.
-- Если подгруппу определить нельзя — 0.
-
-ОСТАЛЬНОЕ:
-- Название группы пиши с дефисами, как в таблице.
-- Текст предметов и преподавателей переноси точно как на фотографии.
-- Номера аудиторий, разбитые переносом строки ("21-" и "45а", "22-" и "211"), склеивай ("21-45а", "22-211").
-- Не путай номер пары с номером аудитории.
-- Не используй сведения, которых нет на изображении.
-
-Перед ответом проверь каждую строку и каждую ячейку отдельно.
-Верни только JSON.`;
+Примеры формата (не данные: на твоём фото будут другие строки):
+{"rows":[
+{"block":1,"pair":1,"group":"мБУп-26-1","sub_from_raw":"0","sub_from":0,"sub_to_raw":"0","sub_to":0,"from":{"subject":"","teacher":"","room":""},"to":{"subject":"Физическая культура","teacher":"Малых А.А.","room":"21-001-1"}},
+{"block":1,"pair":1,"group":"мРУП-26-2","sub_from_raw":"2","sub_from":2,"sub_to_raw":"2","sub_to":2,"from":{"subject":"Иностранный язык","teacher":"Родионова И.П.","room":"21-35"},"to":null},
+{"block":1,"pair":1,"group":"мМТОЭ-25-2","sub_from_raw":"0","sub_from":0,"sub_to_raw":"0","sub_to":0,"from":{"subject":"Математические методы в профессиональной деятельности","teacher":"Загоскина Е.Б.","room":"21-23"},"to":{"subject":"История России","teacher":"Чинская В.Э.","room":"21-45а"}},
+{"block":2,"pair":2,"group":"мКСК-24-2","sub_from_raw":"0","sub_from":0,"sub_to_raw":"0","sub_to":0,"from":{"subject":"","teacher":"","room":""},"to":{"subject":"Физическая культура","teacher":"Немарова Ж.М.","room":""}},
+{"block":4,"pair":4,"group":"мТМТ-26-3","sub_from_raw":"0","sub_from":0,"sub_to_raw":"1","sub_to":1,"from":{"subject":"Физическая культура","teacher":"Ульянов Д.С.","room":"21-001"},"to":{"subject":"Иностранный язык","teacher":"Бухарова Н.А.","room":"21-17"}}
+]}`;
 
 const ROMAN = { i: 1, ii: 2, iii: 3, iv: 4, v: 5, vi: 6 };
 
@@ -218,331 +218,280 @@ const fixRoom = (raw) => {
 };
 
 // Проверяем, действительно ли модель написала «Пары нет»
+// Пустое занятие и «Пары нет», которое модель могла написать текстом вместо null
 const isNoPairs = (lesson) => {
   if (!lesson || typeof lesson !== 'object') return false;
-
-  const fields = [
-    lesson.subject,
-    lesson.teacher,
-    lesson.room
-  ];
-
-  return fields.some((value) =>
-    /^пары?\s+нет[.!]?$/i.test(String(value || '').trim())
+  return [lesson.subject, lesson.teacher, lesson.room].some((v) =>
+    /^пары?\s+нет[.!]?$/i.test(String(v || '').trim())
   );
 };
 
-const emptyLesson = () => ({
-  subject: '',
-  teacher: '',
-  room: ''
-});
+const emptyLesson = () => ({ subject: '', teacher: '', room: '' });
+const isEmptyLesson = (l) => !l || !String(l.subject || '').trim();
 
 const fixLesson = (l, warns, where) => {
   if (!l || typeof l !== 'object') return emptyLesson();
-
   const t = fixTeacher(l.teacher);
   if (t.warn) warns.push(`${where}: ${t.warn}`);
-
-  return {
-    subject: String(l.subject || '').trim(),
-    teacher: t.value,
-    room: fixRoom(l.room)
-  };
+  return { subject: String(l.subject || '').trim(), teacher: t.value, room: fixRoom(l.room) };
 };
+
+// ---------- Подгруппа ----------
+// Модель отдаёт п/г старого и нового занятия отдельно (с дословной записью ячейки).
+// Здесь выбираем итоговую подгруппу и подстраховываемся разбором текста.
+const subFromText = (...parts) => {
+  for (const p of parts) {
+    const t = String(p ?? '').toLowerCase().trim();
+    if (!t) continue;
+    const m = t.match(/(?:п\s*\/?\s*г\w*\.?\s*|подгр\w*\.?\s*)([12])(?!\d)/)
+      || t.match(/(?<![\d-])([12])\s*(?:п\s*\/?\s*г|подгр)/)
+      || t.match(/^([12])$/);
+    if (m) return Number(m[1]);
+  }
+  return 0;
+};
+const asSub = (v) => { const n = Number(v); return n === 1 || n === 2 ? n : 0; };
+
+// п/г старого занятия главнее; если старого нет («Пары нет») — берём п/г нового.
+const subNum = (x, hasOld) => {
+  const from = asSub(x.sub_from) || subFromText(x.sub_from_raw);
+  const to = asSub(x.sub_to) || subFromText(x.sub_to_raw);
+  const picked = hasOld ? (from || to) : (to || from);
+  return picked || asSub(x.sub) || subFromText(x.from?.room, x.from?.teacher, x.from?.subject);
+};
+
+// ---------- Номер пары ----------
+// Основной путь: модель нумерует блоки между толстыми линиями ("block"), цифра пары одна на блок.
+// Голосуем по строкам блока, пропуски заполняем по соседним блокам. Если "block" не пришёл —
+// старый способ: пропуски между известными номерами делим пополам.
+function assignPairs(all, warnings) {
+  const nums = all.map((x) => pairNum(x));
+  const rawBlocks = all.map((x) => { const b = parseInt(x.block, 10); return b > 0 ? b : 0; });
+
+  if (!rawBlocks.every(Boolean)) {
+    const known = nums.map((n, i) => (n ? i : -1)).filter((i) => i >= 0);
+    all.forEach((x, i) => {
+      if (nums[i]) { x._pair = nums[i]; return; }
+      const prev = known.filter((k) => k < i).pop();
+      const next = known.find((k) => k > i);
+      if (prev === undefined && next === undefined) x._pair = 0;
+      else if (prev === undefined) x._pair = nums[next];
+      else if (next === undefined) x._pair = nums[prev];
+      else x._pair = (i - prev) <= (next - i) ? nums[prev] : nums[next];
+    });
+    return;
+  }
+
+  // блоки в порядке появления сверху вниз
+  const order = [];
+  rawBlocks.forEach((b) => { if (order[order.length - 1] !== b && !order.includes(b)) order.push(b); });
+  const pairOf = order.map((b) => {
+    const votes = {};
+    all.forEach((x, i) => { if (rawBlocks[i] === b && nums[i]) votes[nums[i]] = (votes[nums[i]] || 0) + 1; });
+    const keys = Object.keys(votes).sort((a, c) => votes[c] - votes[a]);
+    if (keys.length > 1) warnings.push(`блок ${b}: в строках разные номера пар (${keys.join(', ')}), взят ${keys[0]}`);
+    return keys.length ? Number(keys[0]) : 0;
+  });
+
+  // заполняем блоки без цифры по соседям
+  let guessed = false;
+  const n = pairOf.length;
+  for (let i = 0; i < n; i++) {
+    if (pairOf[i]) continue;
+    let a = i - 1; while (a >= 0 && !pairOf[a]) a--;
+    let b = i + 1; while (b < n && !pairOf[b]) b++;
+    guessed = true;
+    if (a >= 0 && b < n) {
+      const v = pairOf[a] + (i - a);
+      pairOf[i] = v < pairOf[b] ? v : pairOf[a];
+    } else if (a >= 0) {
+      pairOf[i] = Math.min(6, pairOf[a] + (i - a));
+    } else if (b < n) {
+      pairOf[i] = Math.max(1, pairOf[b] - (b - i));
+    }
+  }
+  if (guessed) warnings.push('у части блоков цифра пары не видна на фото — номер определён по соседним блокам, проверьте');
+
+  all.forEach((x, i) => { x._pair = pairOf[order.indexOf(rawBlocks[i])] || 0; });
+}
+
+// ---------- Вызов модели ----------
+const API_URL = process.env.LLM_API_URL || 'https://api.groq.com/openai/v1/chat/completions';
+const MODEL = process.env.QWEN_MODEL || 'qwen/qwen3.8-27b';
+const BUDGET_MS = Number(process.env.PARSE_BUDGET_MS) || 55000; // общий лимит времени на все повторы
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const getRetryDelay = (headers, errorMessage, attempt) => {
-  const resetHeader =
-    headers?.get('x-ratelimit-reset-tokens') ||
-    headers?.get('retry-after');
-
+  const resetHeader = headers?.get('x-ratelimit-reset-tokens') || headers?.get('retry-after');
   let seconds = NaN;
-
   if (resetHeader) {
     const match = String(resetHeader).match(/[\d.]+/);
     if (match) seconds = Number(match[0]);
   }
-
   if (!Number.isFinite(seconds)) {
-    const match = String(errorMessage || '')
-      .match(/try again in\s+([\d.]+)\s*s/i);
-
+    const match = String(errorMessage || '').match(/try again in\s+([\d.]+)\s*s/i);
     if (match) seconds = Number(match[1]);
   }
-
-  if (!Number.isFinite(seconds) || seconds <= 0) {
-    seconds = Math.min(3 * (attempt + 1), 15);
-  }
-
+  if (!Number.isFinite(seconds) || seconds <= 0) seconds = Math.min(3 * (attempt + 1), 15);
   return Math.min(30000, Math.max(1000, seconds * 1000 + 1000));
 };
 
 const extractJson = (text) => {
-  const t = String(text || '')
-    .replace(/```json/gi, '')
-    .replace(/```/g, '')
-    .trim();
-
-  const start = t.indexOf('{');
-  const end = t.lastIndexOf('}');
-
-  const source = start >= 0 && end > start
-    ? t.slice(start, end + 1)
-    : t;
-
-  const parsed = JSON.parse(source);
-
+  const t = String(text || '').replace(/```json/gi, '').replace(/```/g, '').trim();
+  const a = t.indexOf('{'), b = t.lastIndexOf('}');
+  const arr1 = t.indexOf('['), arr2 = t.lastIndexOf(']');
+  let parsed;
+  try {
+    parsed = JSON.parse(a >= 0 && b > a ? t.slice(a, b + 1) : t);
+  } catch (e) {
+    // модель могла вернуть голый массив
+    if (arr1 >= 0 && arr2 > arr1) parsed = JSON.parse(t.slice(arr1, arr2 + 1)); else throw e;
+  }
   if (Array.isArray(parsed)) return parsed;
   if (Array.isArray(parsed.rows)) return parsed.rows;
-
   throw new Error('В ответе нет массива rows');
 };
 
-async function callModel(image, mt, extra) {
-  if (!process.env.GROQ_API_KEY) {
-    return {
-      ok: false,
-      status: 500,
-      error: 'Не задан GROQ_API_KEY в переменных окружения Vercel'
-    };
-  }
-
-  const prompt = extra ? `${PROMPT}\n${extra}` : PROMPT;
+// strict=true — режим «строго JSON» и без рассуждений; если провайдер его не принял (400), повторяем без него
+async function callModel(image, mt, extra, strict, attempt) {
+  const apiKey = process.env.LLM_API_KEY || process.env.GROQ_API_KEY;
+  if (!apiKey) return { ok: false, fatal: true, status: 500, error: 'Не задан GROQ_API_KEY (или LLM_API_KEY) в переменных окружения' };
 
   const body = {
-    model: 'qwen/qwen3.8-27b',
+    model: MODEL,
     max_completion_tokens: 8000,
     temperature: 0,
-    reasoning_effort: 'none',
-    response_format: { type: 'json_object' },
     messages: [{
       role: 'user',
       content: [
-        { type: 'text', text: prompt },
-        {
-          type: 'image_url',
-          image_url: {
-            url: `data:${mt};base64,${image}`,
-            detail: 'high'
-          }
-        }
-      ]
-    }]
+        { type: 'text', text: extra ? `${PROMPT}\n\n${extra}` : PROMPT },
+        { type: 'image_url', image_url: { url: `data:${mt};base64,${image}`, detail: 'high' } },
+      ],
+    }],
   };
+  if (strict) {
+    body.reasoning_effort = 'none';
+    body.response_format = { type: 'json_object' };
+  }
 
-  const r = await fetch(
-    'https://api.groq.com/openai/v1/chat/completions',
-    {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        Authorization: `Bearer ${process.env.GROQ_API_KEY}`
-      },
-      body: JSON.stringify(body)
-    }
-  );
-
+  const r = await fetch(API_URL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify(body),
+  });
   const data = await r.json().catch(() => ({}));
   const content = data.choices?.[0]?.message?.content;
-
   const text = Array.isArray(content)
     ? content.map((part) => part.text || '').join('')
     : (typeof content === 'string' ? content : '');
-
-  return {
-    ok: r.ok,
-    status: r.status,
-    error: data.error?.message || data.message || 'Ошибка Groq API',
-    text,
-    retryAfterMs: getRetryDelay(r.headers, data.error?.message, 0)
-  };
+  // если модель всё же вывела рассуждения в <think>…</think> — убираем
+  const clean = text.replace(/<think>[\s\S]*?<\/think>/gi, '');
+  const error = data.error?.message || data.message || 'Ошибка API модели';
+  return { ok: r.ok, status: r.status, error, text: clean, retryMs: getRetryDelay(r.headers, error, attempt) };
 }
 
 async function recognize(image, mt) {
-  let extra = '';
-  let lastErr = null;
-  let lastText = '';
+  const t0 = Date.now();
+  let extra = '', strict = true, lastErr = null, lastText = '';
 
   for (let attempt = 0; attempt < 6; attempt++) {
-    let result;
-
+    let res;
     try {
-      result = await callModel(image, mt, extra);
+      res = await callModel(image, mt, extra, strict, attempt);
     } catch (e) {
-      lastErr = {
-        status: 502,
-        error: 'Сеть: ' + e.message
-      };
-
+      lastErr = { status: 502, error: 'Сеть: ' + e.message };
+      if (Date.now() - t0 + 1500 * (attempt + 1) > BUDGET_MS) break;
       await sleep(1500 * (attempt + 1));
       continue;
     }
 
-    if (!result.ok) {
-      lastErr = result;
-
-      console.error('GROQ API ERROR:', result.status, result.error);
-
-      if (result.status === 429) {
-        const wait = getRetryDelay(null, result.error, attempt);
-        console.log('GROQ RATE LIMIT: ожидание', wait, 'мс');
-        await sleep(wait + Math.floor(Math.random() * 700));
+    if (!res.ok) {
+      if (res.fatal) return { error: res.error, status: 502 }; // ошибка настройки — повторять бессмысленно
+      lastErr = res;
+      console.error('LLM API ERROR:', res.status, res.error);
+      if (res.status === 400 && strict) { strict = false; continue; }
+      if (res.status === 429 || res.status >= 500) {
+        const wait = (res.status === 429 ? res.retryMs : 2000 * (attempt + 1)) + Math.floor(Math.random() * 700);
+        if (Date.now() - t0 + wait > BUDGET_MS) break;
+        await sleep(wait);
         continue;
       }
-
-      if (result.status >= 500) {
-        await sleep(2000 * (attempt + 1));
-        continue;
-      }
-
-      return {
-        error: result.error,
-        status: 502
-      };
+      return { error: res.error, status: 502 };
     }
 
-    lastText = result.text;
-
+    lastText = res.text;
     try {
-      const all = extractJson(result.text);
-
-      console.log('GROQ OCR TOTAL:', all.length);
-      console.log('GROQ OCR DEBUG:', JSON.stringify(all.slice(0, 10)));
-
+      const all = extractJson(res.text);
+      if (!all.length) throw new Error('пустой массив rows');
+      console.log('OCR TOTAL:', all.length);
+      console.log('OCR DEBUG:', JSON.stringify(all.slice(0, 5)));
       return { all };
     } catch (e) {
-      console.error('GROQ JSON ERROR:', e.message);
-      console.error('GROQ RAW RESPONSE:', result.text);
-
-      extra = `Предыдущий ответ не подошёл.
-Верни строго JSON-объект {"rows":[...]}.
-Не добавляй пояснений.
-Не пропускай строки таблицы.
-Не выдумывай «Пары нет»: используй эту фразу только если она отчётливо видна в конкретной ячейке.`;
+      console.error('JSON ERROR:', e.message);
+      console.error('RAW RESPONSE:', res.text.slice(0, 2000));
+      extra = 'Предыдущий ответ не подошёл. Верни строго JSON-объект {"rows":[...]} с ВСЕМИ строками таблицы, без пояснений. «Пары нет» пиши только там, где эти слова напечатаны в ячейке.';
     }
   }
 
   return lastText
-    ? {
-        error: 'Не удалось разобрать ответ модели',
-        status: 502,
-        raw: lastText
-      }
-    : {
-        error: lastErr?.error || 'Ошибка API после нескольких попыток',
-        status: 502
-      };
+    ? { error: 'Не удалось разобрать ответ модели', status: 502, raw: lastText }
+    : { error: lastErr?.error || 'Ошибка API после нескольких попыток', status: 502 };
 }
 
 module.exports = async (req, res) => {
-  if (req.method !== 'POST') {
-    return res.status(405).end();
-  }
-
-  if (!authed(req)) {
-    return res.status(401).json({ error: 'Неверный пароль' });
-  }
+  if (req.method !== 'POST') return res.status(405).end();
+  if (!authed(req)) return res.status(401).json({ error: 'Неверный пароль' });
 
   const { image, media_type } = req.body || {};
-
-  if (!image) {
-    return res.status(400).json({ error: 'Нет изображения' });
-  }
+  if (!image) return res.status(400).json({ error: 'Нет изображения' });
 
   const out = await recognize(image, media_type || 'image/jpeg');
+  if (out.error) return res.status(out.status || 502).json({ error: out.error, raw: out.raw });
 
-  if (out.error) {
-    return res.status(out.status || 502).json({
-      error: out.error,
-      raw: out.raw
+  const all = (Array.isArray(out.all) ? out.all : []).filter((x) => x && typeof x === 'object');
+  const warnings = [];
+  assignPairs(all, warnings);
+
+  const unknownGroups = new Set();
+  const known = all.filter((x) => {
+    if (GROUPS[norm(x.group)]) return true;
+    if (x.group) unknownGroups.add(String(x.group));
+    return false;
+  });
+
+  const rows = [];
+  for (const x of known) {
+    const group = GROUPS[norm(x.group)];
+    const where = `${group}, пара ${x._pair}`;
+
+    const fromNoPairs = isNoPairs(x.from);
+    const toNoPairs = isNoPairs(x.to);
+    const from = fromNoPairs || !x.from ? emptyLesson() : fixLesson(x.from, warnings, where);
+
+    // Новая часть пустая, но «Пары нет» не написано — это не отмена: такую строку не публикуем
+    if (!toNoPairs && x.to && isEmptyLesson(x.to)) {
+      warnings.push(`${where}: пустая новая часть без «Пары нет» — строка пропущена`);
+      continue;
+    }
+    const to = toNoPairs || !x.to ? null : fixLesson(x.to, warnings, where);
+
+    rows.push({
+      group,
+      pair: x._pair,
+      sub: subNum(x, !fromNoPairs && !isEmptyLesson(x.from)),
+      from,
+      to,
     });
   }
 
-  let all = out.all;
-
-  if (!Array.isArray(all)) {
-    all = Array.isArray(all?.rows) ? all.rows : [];
-  }
-
-  all = all.filter((x) => x && typeof x === 'object');
-
-  // Восстановление номера пары в объединённых ячейках
-  const nums = all.map((x) => pairNum(x));
-
-  const known_i = nums
-    .map((n, i) => (n ? i : -1))
-    .filter((i) => i >= 0);
-
-  all.forEach((x, i) => {
-    if (nums[i]) {
-      x._pair = nums[i];
-      return;
-    }
-
-    const prev = known_i.filter((k) => k < i).pop();
-    const next = known_i.find((k) => k > i);
-
-    if (prev === undefined && next === undefined) {
-      x._pair = 0;
-      return;
-    }
-
-    if (prev === undefined) {
-      x._pair = nums[next];
-      return;
-    }
-
-    if (next === undefined) {
-      x._pair = nums[prev];
-      return;
-    }
-
-    x._pair = (i - prev) <= (next - i)
-      ? nums[prev]
-      : nums[next];
-  });
-
-  const warnings = [];
-  const known = all.filter((x) => GROUPS[norm(x.group)]);
-
-  const rows = known
-    .map((x) => {
-      const group = GROUPS[norm(x.group)];
-      const where = `${group}, пара ${x._pair}`;
-
-      // Если модель написала «Пары нет» в старом занятии,
-      // очищаем старое занятие.
-      const fromNoPairs = isNoPairs(x.from);
-
-      // Если модель написала «Пары нет» в новом занятии,
-      // нового занятия нет.
-      const toNoPairs = isNoPairs(x.to);
-
-      const from = fromNoPairs
-        ? emptyLesson()
-        : fixLesson(x.from, warnings, where);
-
-      const to = toNoPairs || !x.to
-        ? null
-        : fixLesson(x.to, warnings, where);
-
-      return {
-        group,
-        pair: x._pair,
-        sub: Number(x.sub) || 0,
-        from,
-        to
-      };
-    })
-    .filter((r) => r.pair > 0);
-
+  const final = rows.filter((r) => r.pair > 0);
   res.status(200).json({
-    rows,
+    rows: final,
     total: all.length,
-    skipped: known.length - rows.length,
+    skipped: known.length - final.length,
     warnings: [...new Set(warnings)],
-    sample: all.slice(0, 3)
+    unknown_groups: [...unknownGroups],
+    sample: all.slice(0, 3),
   });
 };
