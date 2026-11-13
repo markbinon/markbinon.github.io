@@ -335,9 +335,10 @@ async function callPaddleOCR(imageBase64) {
   let createRes;
   let createRaw = '';
   try {
+    // Официальные поля Baidu Cloud: file_data + file_name
     const form = new URLSearchParams();
-    form.set('file', imageBase64);
-    form.set('file_type', 'image');
+    form.set('file_data', imageBase64);
+    form.set('file_name', 'schedule.jpg');
 
     log('create request', `imageBase64 len=${imageBase64?.length || 0}`);
 
@@ -488,6 +489,33 @@ async function callPaddleOCR(imageBase64) {
           textSource = 'markdown_url';
         } catch (e) {
           log('markdown_url fetch failed', e.message);
+        }
+      }
+
+      if (!text && result.parse_result_url) {
+        try {
+          const prRes = await fetch(result.parse_result_url);
+          const prJson = await prRes.json();
+          // Собираем текст/таблицы со всех страниц
+          const pages = prJson.pages || [];
+          const chunks = [];
+          for (const page of pages) {
+            if (page.text) chunks.push(page.text);
+            if (Array.isArray(page.tables)) {
+              for (const t of page.tables) {
+                if (t.markdown) chunks.push(t.markdown);
+              }
+            }
+            if (Array.isArray(page.layouts)) {
+              for (const l of page.layouts) {
+                if (l.text) chunks.push(l.text);
+              }
+            }
+          }
+          text = chunks.join('\n\n') || JSON.stringify(prJson, null, 2);
+          textSource = 'parse_result_url';
+        } catch (e) {
+          log('parse_result_url fetch failed', e.message);
         }
       }
 
