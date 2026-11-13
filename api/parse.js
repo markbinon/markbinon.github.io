@@ -326,7 +326,7 @@ async function callVision(imageBase64, mediaType, extra) {
     };
   }
 
-  const model = process.env.GROQ_VISION_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct';
+  const model = process.env.GROQ_VISION_MODEL || 'meta-llama/llama-4-scout';
   const prompt = extra ? `${PROMPT}\n\n${extra}` : PROMPT;
   const dataUrl = `data:${mediaType || 'image/jpeg'};base64,${imageBase64}`;
 
