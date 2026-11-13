@@ -528,26 +528,43 @@ async function callTextModel(ocrText, extra) {
 }
 
 async function recognize(image, mt) {
-  // === Шаг 1: PaddleOCR ===
+  const debug = {
+    stage: 'start',
+    ocrTextLength: 0,
+    ocrPreview: '',
+    groqAttempts: 0,
+    lastGroqError: null,
+    lastGroqRaw: ''
+  };
+
+  // === Шаг 1: Baidu OCR ===
   let ocrResult;
   try {
     ocrResult = await callPaddleOCR(image);
   } catch (e) {
+    console.error('[DEBUG] Baidu network error:', e.message);
     return {
-      error: 'Сеть (PaddleOCR): ' + e.message,
-      status: 502
+      error: 'Сеть (Baidu): ' + e.message,
+      status: 502,
+      debug
     };
   }
 
   if (!ocrResult.ok) {
-    console.error('PADDLEOCR ERROR:', ocrResult.status, ocrResult.error);
+    console.error('[DEBUG] Baidu error:', ocrResult.status, ocrResult.error);
     return {
       error: ocrResult.error,
-      status: ocrResult.status || 502
+      status: ocrResult.status || 502,
+      debug: { ...debug, stage: 'baidu_error', baiduError: ocrResult.error }
     };
   }
 
-  console.log('PADDLEOCR OK, text length:', ocrResult.text?.length || 0);
+  debug.stage = 'baidu_ok';
+  debug.ocrTextLength = ocrResult.text?.length || 0;
+  debug.ocrPreview = String(ocrResult.text || '').slice(0, 500);
+
+  console.log('[DEBUG] Baidu OK, text length:', debug.ocrTextLength);
+  console.log('[DEBUG] OCR preview:', debug.ocrPreview);
 
   // === Шаг 2: Текст → JSON через Groq ===
   let extra = '';
@@ -555,6 +572,7 @@ async function recognize(image, mt) {
   let lastText = '';
 
   for (let attempt = 0; attempt < 5; attempt++) {
+    debug.groqAttempts = attempt + 1;
     let result;
 
     try {
@@ -564,17 +582,20 @@ async function recognize(image, mt) {
         status: 502,
         error: 'Сеть (Groq): ' + e.message
       };
+      debug.lastGroqError = lastErr.error;
+      console.error('[DEBUG] Groq network error:', e.message);
       await sleep(1500 * (attempt + 1));
       continue;
     }
 
     if (!result.ok) {
       lastErr = result;
-      console.error('GROQ API ERROR:', result.status, result.error);
+      debug.lastGroqError = result.error;
+      console.error('[DEBUG] Groq API error:', result.status, result.error);
 
       if (result.status === 429) {
         const wait = getRetryDelay(null, result.error, attempt);
-        console.log('GROQ RATE LIMIT: ожидание', wait, 'мс');
+        console.log('[DEBUG] Groq rate limit, wait', wait, 'ms');
         await sleep(wait + Math.floor(Math.random() * 700));
         continue;
       }
@@ -586,22 +607,24 @@ async function recognize(image, mt) {
 
       return {
         error: result.error,
-        status: 502
+        status: 502,
+        debug
       };
     }
 
     lastText = result.text;
+    debug.lastGroqRaw = String(result.text || '').slice(0, 800);
 
     try {
       const all = extractJson(result.text);
 
-      console.log('FINAL TOTAL:', all.length);
-      console.log('FINAL DEBUG:', JSON.stringify(all.slice(0, 8)));
+      console.log('[DEBUG] JSON parsed, rows:', all.length);
+      console.log('[DEBUG] First rows:', JSON.stringify(all.slice(0, 5)));
 
-      return { all };
+      return { all, debug };
     } catch (e) {
-      console.error('JSON PARSE ERROR:', e.message);
-      console.error('RAW RESPONSE:', result.text?.slice(0, 800));
+      console.error('[DEBUG] JSON parse error:', e.message);
+      console.error('[DEBUG] Raw Groq response:', result.text?.slice(0, 800));
 
       extra = `Предыдущий ответ не подошёл.
 Верни строго JSON-объект {"rows":[...]}.
@@ -615,11 +638,13 @@ async function recognize(image, mt) {
     ? {
         error: 'Не удалось разобрать ответ модели',
         status: 502,
-        raw: lastText
+        raw: lastText,
+        debug
       }
     : {
         error: lastErr?.error || 'Ошибка API после нескольких попыток',
-        status: 502
+        status: 502,
+        debug
       };
 }
 
@@ -641,9 +666,11 @@ module.exports = async (req, res) => {
   const out = await recognize(image, media_type || 'image/jpeg');
 
   if (out.error) {
+    console.error('[DEBUG] recognize failed:', out.error);
     return res.status(out.status || 502).json({
       error: out.error,
-      raw: out.raw
+      raw: out.raw,
+      debug: out.debug || null
     });
   }
 
@@ -694,6 +721,11 @@ module.exports = async (req, res) => {
   const warnings = [];
   const known = all.filter((x) => GROUPS[norm(x.group)]);
 
+  const unknownGroups = all
+    .filter((x) => !GROUPS[norm(x.group)])
+    .map((x) => x.group)
+    .filter(Boolean);
+
   const rows = known
     .map((x) => {
       const group = GROUPS[norm(x.group)];
@@ -720,11 +752,24 @@ module.exports = async (req, res) => {
     })
     .filter((r) => r.pair > 0);
 
+  const debugInfo = {
+    ...(out.debug || {}),
+    stage: 'done',
+    parsedRows: all.length,
+    knownGroups: known.length,
+    finalRows: rows.length,
+    unknownGroups: [...new Set(unknownGroups)].slice(0, 10),
+    pairsFound: nums.filter(Boolean).length
+  };
+
+  console.log('[DEBUG] Final:', JSON.stringify(debugInfo));
+
   res.status(200).json({
     rows,
     total: all.length,
     skipped: known.length - rows.length,
     warnings: [...new Set(warnings)],
-    sample: all.slice(0, 3)
+    sample: all.slice(0, 5),
+    debug: debugInfo
   });
 };
