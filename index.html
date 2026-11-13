@@ -377,24 +377,18 @@
     .pair-num { font-size: .64rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: rgb(var(--accent)); padding: .14rem .55rem; border-radius: 9999px; background: rgb(var(--accent) / .13); margin-right: .1rem; }
     .pair-name { font-size: 1.04rem; font-weight: 700; line-height: 1.32; letter-spacing: -.01em; overflow-wrap: break-word; }
     .pair.cancelled .pair-name { text-decoration: line-through; opacity: .6; }
-    .subs { list-style: none; margin: .65rem 0 0; padding: 0; display: flex; flex-direction: column; gap: .35rem; }
-    .sub-row { display: flex; align-items: flex-start; gap: .45rem; padding: .42rem .6rem; border-radius: var(--r-sm); font-size: .8rem; line-height: 1.4; background: rgb(var(--warn) / .1); border: 1px solid rgb(var(--warn) / .3); overflow-wrap: anywhere; }
-    .sub-row.cx { background: rgb(var(--bad) / .1); border-color: rgb(var(--bad) / .34); }
-    .sub-tag { flex: none; padding-top: .1rem; font-size: .72rem; font-weight: 800; letter-spacing: .02em; color: rgb(var(--warn)); }
-    .sub-text { color: rgb(var(--text) / .85); }
-    .sub-row.cx .sub-tag { color: rgb(var(--bad)); }
-    .sub-row.cx .sub-text { color: rgb(var(--bad)); text-decoration: line-through; opacity: .85; }
-    .sub-row { align-items: center; }
-    .sub-tag { padding-top: 0; min-width: 2.7rem; padding: .18rem .5rem; border-radius: 9999px; text-align: center; white-space: nowrap; color: rgb(var(--warn)); background: rgb(var(--warn) / .16); }
-    .sub-row.cx .sub-tag { background: rgb(var(--bad) / .16); }
-    .sub-row.ok { background: rgb(var(--text) / .05); border-color: rgb(var(--line)); }
-    .sub-row.ok .sub-tag { color: rgb(var(--ok)); background: rgb(var(--ok) / .14); }
-    .sub-main { display: flex; flex-direction: column; min-width: 0; }
-    .sub-state { font-size: .72rem; font-weight: 800; letter-spacing: .02em; text-transform: uppercase; color: rgb(var(--warn)); }
-    .sub-row.cx .sub-state { color: rgb(var(--bad)); }
-    .sub-row.ok .sub-state { color: rgb(var(--ok)); }
-    .sub-row.cx .sub-text { text-decoration: none; opacity: .75; }
-    .sub-row.cx .sub-text s { text-decoration: line-through; }
+    .subs { list-style: none; margin: .7rem 0 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .45rem; }
+    .subs.one { grid-template-columns: minmax(0, 1fr); }
+    .sub-row { --sc: var(--warn); display: flex; flex-direction: column; gap: .3rem; min-width: 0; padding: .5rem .55rem .55rem; border-radius: var(--r-sm); font-size: .78rem; line-height: 1.35; background: rgb(var(--sc) / .1); border: 1px solid rgb(var(--sc) / .34); border-top: 3px solid rgb(var(--sc)); overflow-wrap: break-word; hyphens: auto; -webkit-hyphens: auto; }
+    .sub-row.cx { --sc: var(--bad); }
+    .sub-row.ok { --sc: var(--ok); background: rgb(var(--text) / .05); border-color: rgb(var(--line)); border-top-color: rgb(var(--sc)); }
+    .sub-top { display: flex; align-items: center; justify-content: space-between; gap: .3rem; flex-wrap: wrap; }
+    .sub-tag { font-size: .8rem; font-weight: 800; letter-spacing: .01em; color: rgb(var(--text)); }
+    .sub-state { font-size: .62rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; padding: .1rem .42rem; border-radius: 9999px; color: rgb(var(--sc)); background: rgb(var(--sc) / .16); white-space: nowrap; }
+    .sub-name { font-weight: 650; font-size: .74rem; color: rgb(var(--text) / .92); }
+    .sub-line { color: rgb(var(--text) / .68); font-size: .74rem; }
+    .sub-row.cx .sub-name, .sub-row.cx .sub-line { text-decoration: line-through; opacity: .7; }
+    .sub-empty { color: rgb(var(--text) / .5); font-size: .74rem; }
     .meta { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .65rem; }
     .chip { display: inline-flex; align-items: flex-start; gap: .38rem; max-width: 100%; padding: .24rem .6rem; border-radius: 9999px; font-size: .78rem; line-height: 1.35; color: rgb(var(--text) / .78); background: rgb(var(--text) / .07); border: 1px solid rgb(var(--line)); overflow-wrap: anywhere; }
     .chip .ico { width: .88rem; height: .88rem; margin-top: .12rem; color: rgb(var(--accent)); opacity: .9; }
@@ -421,7 +415,7 @@
     html[data-compact="on"] .rail::before { top: 1rem; }
     html[data-compact="on"] .meta { margin-top: .4rem; }
     html[data-compact="on"] .subs { margin-top: .4rem; }
-    html[data-compact="on"] .sub-row { padding: .3rem .5rem; font-size: .76rem; }
+    html[data-compact="on"] .sub-row { padding: .35rem .45rem; font-size: .74rem; }
     html[data-compact="on"] .pair-name { font-size: .95rem; }
 
     /* =====================================================
@@ -3209,19 +3203,15 @@ const SCHEDULE_MTOE_25_1 = {
           const subRow = (n) => {
             const base = baseForSub(it, n);
             if (base.none) return '';
-            const s = subs.find((x) => x.sub === n);
-            const det = (o) => [o.name, o.teacher, o.room].filter(Boolean).map(esc).join(' · ');
-            if (s && s.cancelled) {
-              return `<li class="sub-row cx"><span class="sub-tag">п/г ${n}</span><span class="sub-main"><span class="sub-state">Пары нет</span><span class="sub-text"><s>${det({ name: base.name, teacher: base.teacher, room: base.room ? 'ауд. ' + base.room.replace(/^ауд\.?\s*/i, '') : '' })}</s></span></span></li>`;
-            }
-            if (s) {
-              const room = s.room || (base.room ? 'ауд. ' + base.room.replace(/^ауд\.?\s*/i, '') : '');
-              return `<li class="sub-row"><span class="sub-tag">п/г ${n}</span><span class="sub-main"><span class="sub-state">Замена</span><span class="sub-text">${det({ name: s.name || base.name, teacher: s.teacher, room })}</span></span></li>`;
-            }
-            const room = base.room ? 'ауд. ' + base.room.replace(/^ауд\.?\s*/i, '') : '';
-            return `<li class="sub-row ok"><span class="sub-tag">п/г ${n}</span><span class="sub-main"><span class="sub-state">Пара идёт</span><span class="sub-text">${det({ name: base.name, teacher: base.teacher, room })}</span></span></li>`;
+            const sb = subs.find((x) => x.sub === n);
+            const roomOf = (r) => (r ? 'ауд. ' + String(r).replace(/^ауд\.?\s*/i, '') : '');
+            const card = (cls, state, d) => `<li class="sub-row${cls}"><div class="sub-top"><span class="sub-tag">п/г ${n}</span><span class="sub-state">${state}</span></div>${d.name ? `<div class="sub-name">${esc(d.name)}</div>` : ''}${d.teacher ? `<div class="sub-line">${esc(d.teacher)}</div>` : ''}${d.room ? `<div class="sub-line">${esc(d.room)}</div>` : ''}</li>`;
+            if (sb && sb.cancelled) return card(' cx', 'Пары нет', { name: base.name, teacher: base.teacher, room: roomOf(base.room) });
+            if (sb) return card('', 'Замена', { name: sb.name || base.name, teacher: sb.teacher, room: sb.room || roomOf(base.room) });
+            return card(' ok', 'Пара идёт', { name: base.name, teacher: base.teacher, room: roomOf(base.room) });
           };
-          const subsHtml = subs.length ? `<ul class="subs">${subRow(1)}${subRow(2)}</ul>` : '';
+          const subCards = subs.length ? subRow(1) + subRow(2) : '';
+          const subsHtml = subCards ? `<ul class="subs${(subCards.match(/<li /g) || []).length === 1 ? ' one' : ''}">${subCards}</ul>` : '';
           listHtml += `
             <li class="${cls}" style="--i:${idx++}">
               <div class="pair-time"><b>${esc(fmt(it.start))}</b><span>${esc(fmt(it.end))}</span></div>
