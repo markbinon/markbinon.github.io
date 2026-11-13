@@ -326,7 +326,7 @@ async function callVision(imageBase64, mediaType, extra) {
     };
   }
 
-  const model = process.env.GROQ_VISION_MODEL || 'qwen/qwen3.8-27b';
+  const model = process.env.GROQ_VISION_MODEL || 'openai/gpt-oss-120b';
   const prompt = extra ? `${PROMPT}\n\n${extra}` : PROMPT;
   const dataUrl = `data:${mediaType || 'image/jpeg'};base64,${imageBase64}`;
 
@@ -372,7 +372,7 @@ async function callVision(imageBase64, mediaType, extra) {
 async function recognize(image, mt) {
   const debug = {
     stage: 'start',
-    model: process.env.GROQ_VISION_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct',
+    model: process.env.GROQ_VISION_MODEL || 'openai/gpt-oss-120b',
     attempts: 0,
     lastError: null,
     lastRaw: '',
