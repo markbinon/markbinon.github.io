@@ -545,54 +545,146 @@ async function callPaddleOCR(imageBase64) {
 }
 
 /**
- * Текст OCR + PROMPT → строгий JSON через Groq
+ * Текст OCR + PROMPT → строгий JSON
+ * Поддерживает: Groq → OpenAI → Gemini → Anthropic
  */
 async function callTextModel(ocrText, extra) {
-  if (!process.env.GROQ_API_KEY) {
-    return {
-      ok: false,
-      status: 500,
-      error: 'Не задан GROQ_API_KEY (нужен для преобразования OCR → JSON)'
-    };
-  }
-
   const prompt = extra
     ? `${PROMPT}\n\n--- OCR РЕЗУЛЬТАТ ---\n${ocrText}\n\n${extra}`
     : `${PROMPT}\n\n--- OCR РЕЗУЛЬТАТ ---\n${ocrText}`;
 
-  const body = {
-    model: 'llama-3.3-70b-versatile',
-    max_completion_tokens: 8000,
-    temperature: 0,
-    response_format: { type: 'json_object' },
-    messages: [{
-      role: 'user',
-      content: prompt
-    }]
-  };
+  // 1) Groq
+  if (process.env.GROQ_API_KEY) {
+    const body = {
+      model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
+      max_completion_tokens: 8000,
+      temperature: 0,
+      response_format: { type: 'json_object' },
+      messages: [{ role: 'user', content: prompt }]
+    };
 
-  const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      Authorization: `Bearer ${process.env.GROQ_API_KEY}`
-    },
-    body: JSON.stringify(body)
-  });
+    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        Authorization: `Bearer ${process.env.GROQ_API_KEY}`
+      },
+      body: JSON.stringify(body)
+    });
 
-  const data = await r.json().catch(() => ({}));
-  const content = data.choices?.[0]?.message?.content;
+    const data = await r.json().catch(() => ({}));
+    const content = data.choices?.[0]?.message?.content;
+    const text = Array.isArray(content)
+      ? content.map((part) => part.text || '').join('')
+      : (typeof content === 'string' ? content : '');
 
-  const text = Array.isArray(content)
-    ? content.map((part) => part.text || '').join('')
-    : (typeof content === 'string' ? content : '');
+    return {
+      ok: r.ok,
+      status: r.status,
+      error: data.error?.message || data.message || 'Ошибка Groq API',
+      text,
+      retryAfterMs: getRetryDelay(r.headers, data.error?.message, 0)
+    };
+  }
+
+  // 2) OpenAI
+  if (process.env.OPENAI_API_KEY) {
+    const body = {
+      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+      max_tokens: 8000,
+      temperature: 0,
+      response_format: { type: 'json_object' },
+      messages: [{ role: 'user', content: prompt }]
+    };
+
+    const r = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+      },
+      body: JSON.stringify(body)
+    });
+
+    const data = await r.json().catch(() => ({}));
+    const text = data.choices?.[0]?.message?.content || '';
+
+    return {
+      ok: r.ok,
+      status: r.status,
+      error: data.error?.message || 'Ошибка OpenAI API',
+      text,
+      retryAfterMs: getRetryDelay(r.headers, data.error?.message, 0)
+    };
+  }
+
+  // 3) Gemini
+  if (process.env.GEMINI_API_KEY) {
+    const model = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`;
+
+    const body = {
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0,
+        maxOutputTokens: 8000,
+        responseMimeType: 'application/json'
+      }
+    };
+
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+
+    const data = await r.json().catch(() => ({}));
+    const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('') || '';
+
+    return {
+      ok: r.ok,
+      status: r.status,
+      error: data.error?.message || 'Ошибка Gemini API',
+      text,
+      retryAfterMs: 0
+    };
+  }
+
+  // 4) Anthropic
+  if (process.env.ANTHROPIC_API_KEY) {
+    const body = {
+      model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514',
+      max_tokens: 8000,
+      temperature: 0,
+      messages: [{ role: 'user', content: prompt }]
+    };
+
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify(body)
+    });
+
+    const data = await r.json().catch(() => ({}));
+    const text = (data.content || []).map((b) => b.text || '').join('');
+
+    return {
+      ok: r.ok,
+      status: r.status,
+      error: data.error?.message || 'Ошибка Anthropic API',
+      text,
+      retryAfterMs: 0
+    };
+  }
 
   return {
-    ok: r.ok,
-    status: r.status,
-    error: data.error?.message || data.message || 'Ошибка Groq API',
-    text,
-    retryAfterMs: getRetryDelay(r.headers, data.error?.message, 0)
+    ok: false,
+    status: 500,
+    error: 'Нет ключа для текстовой модели: задай GROQ_API_KEY или OPENAI_API_KEY или GEMINI_API_KEY или ANTHROPIC_API_KEY'
   };
 }
 
@@ -733,6 +825,19 @@ async function recognize(image, mt) {
 }
 
 module.exports = async (req, res) => {
+  // === ВРЕМЕННАЯ ПРОВЕРКА ДЕПЛОЯ ===
+  // Если видишь эту ошибку — новый скрипт работает.
+  // После проверки скажи — уберу.
+  if (req.body?.debug_ping === true) {
+    return res.status(200).json({
+      ok: true,
+      message: 'NEW_PARSE_JS_LOADED_v3',
+      time: new Date().toISOString(),
+      hasBaiduToken: !!(process.env.BAIDU_ACCESS_TOKEN || process.env.PADDLEOCR_TOKEN || process.env.BAIDU_TOKEN),
+      hasGroqKey: !!process.env.GROQ_API_KEY
+    });
+  }
+
   if (req.method !== 'POST') {
     return res.status(405).end();
   }
@@ -744,7 +849,9 @@ module.exports = async (req, res) => {
   const { image, media_type } = req.body || {};
 
   if (!image) {
-    return res.status(400).json({ error: 'Нет изображения' });
+    return res.status(400).json({
+      error: 'Нет изображения. Если видишь этот текст — новый parse.js загружен (v3).'
+    });
   }
 
   const out = await recognize(image, media_type || 'image/jpeg');
@@ -870,13 +977,14 @@ module.exports = async (req, res) => {
     ].filter(Boolean).join(' | ');
 
     return res.status(422).json({
-      error: 'Не удалось распознать ни одной строки. ' + reason,
+      error: '[v3] Не удалось распознать ни одной строки. ' + reason,
       rows: [],
       total: all.length,
       sample: all.slice(0, 8),
       debug: debugInfo,
       baiduLogs: debugInfo.baiduLogs || [],
-      warnings: [...new Set(warnings)]
+      warnings: [...new Set(warnings)],
+      scriptVersion: 'parse-js-v3-debug'
     });
   }
 
