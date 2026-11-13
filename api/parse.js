@@ -299,150 +299,157 @@ const extractJson = (text) => {
 };
 
 /**
- * Вызов Baidu PaddleOCR-VL (асинхронный API)
- * Возвращает чистый текст / markdown таблицы
+ * Вызов официального Baidu Cloud PaddleOCR-VL
+ * (aip.baidubce.com) — один access_token
  */
 async function callPaddleOCR(imageBase64) {
-  const TOKEN = process.env.PADDLEOCR_TOKEN;
+  const TOKEN =
+    process.env.BAIDU_ACCESS_TOKEN ||
+    process.env.PADDLEOCR_TOKEN ||
+    process.env.BAIDU_TOKEN;
 
   if (!TOKEN) {
     return {
       ok: false,
       status: 500,
-      error: 'Не задан PADDLEOCR_TOKEN в переменных окружения Vercel'
+      error: 'Не задан BAIDU_ACCESS_TOKEN (или PADDLEOCR_TOKEN) в переменных окружения Vercel'
     };
   }
 
-  const JOB_URL = 'https://paddleocr.aistudio-app.com/api/v2/ocr/jobs';
-
   // 1. Создаём задачу
+  const createUrl =
+    `https://aip.baidubce.com/rest/2.0/brain/online/v2/paddle-vl-parser/task?access_token=${encodeURIComponent(TOKEN)}`;
+
   let createRes;
   try {
-    createRes = await fetch(JOB_URL, {
+    const form = new URLSearchParams();
+    form.set('file', imageBase64);           // base64 картинки
+    // form.set('url', '');                  // можно вместо file
+    form.set('file_type', 'image');          // image / pdf
+    // form.set('language_type', 'CHN_ENG');
+
+    createRes = await fetch(createUrl, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${TOKEN}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/x-www-form-urlencoded'
       },
-      body: JSON.stringify({
-        model: 'PaddleOCR-VL',
-        file: imageBase64,
-        fileType: 1, // 1 = image
-        optionalPayload: {
-          useDocOrientationClassify: false,
-          useDocUnwarping: false,
-          useChartRecognition: false
-        }
-      })
+      body: form.toString()
     });
   } catch (e) {
     return {
       ok: false,
       status: 502,
-      error: 'Сеть (PaddleOCR create): ' + e.message
+      error: 'Сеть (Baidu create): ' + e.message
     };
   }
 
   const createData = await createRes.json().catch(() => ({}));
 
-  if (!createRes.ok) {
-    if (createRes.status === 401 || createRes.status === 403) {
-      return {
-        ok: false,
-        status: createRes.status,
-        error: 'PaddleOCR: неверный токен или формат Authorization (попробуй token вместо Bearer). Ответ: ' +
-          (createData.message || createData.errorMsg || JSON.stringify(createData).slice(0, 200))
-      };
-    }
-
+  if (!createRes.ok || createData.error_code) {
     return {
       ok: false,
-      status: createRes.status,
-      error: createData.message || createData.errorMsg || createData.error ||
-        'Ошибка создания задачи PaddleOCR: ' + JSON.stringify(createData).slice(0, 300)
+      status: createRes.status || 502,
+      error: createData.error_msg || createData.error_code ||
+        ('Ошибка создания задачи Baidu: ' + JSON.stringify(createData).slice(0, 300))
     };
   }
 
-  const jobId = createData.jobId || createData.data?.jobId || createData.id || createData.job_id;
+  const taskId =
+    createData.task_id ||
+    createData.result?.task_id ||
+    createData.data?.task_id;
 
-  if (!jobId) {
+  if (!taskId) {
     return {
       ok: false,
       status: 502,
-      error: 'PaddleOCR не вернул jobId: ' + JSON.stringify(createData).slice(0, 400)
+      error: 'Baidu не вернул task_id: ' + JSON.stringify(createData).slice(0, 400)
     };
   }
 
-  console.log('PaddleOCR job created:', jobId);
+  console.log('Baidu task created:', taskId);
 
-  // 2. Поллим результат (до ~90 сек)
+  // 2. Поллим результат
+  const queryUrl =
+    `https://aip.baidubce.com/rest/2.0/brain/online/v2/paddle-vl-parser/task/query?access_token=${encodeURIComponent(TOKEN)}`;
+
   for (let i = 0; i < 30; i++) {
     await sleep(3000);
 
     let statusRes;
     try {
-      statusRes = await fetch(`${JOB_URL}/${jobId}`, {
-        method: 'GET',
+      const form = new URLSearchParams();
+      form.set('task_id', taskId);
+
+      statusRes = await fetch(queryUrl, {
+        method: 'POST',
         headers: {
-          'Authorization': `Bearer ${TOKEN}`
-        }
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: form.toString()
       });
     } catch (e) {
-      console.error('PaddleOCR poll network error:', e.message);
+      console.error('Baidu poll network error:', e.message);
       continue;
     }
 
     const statusData = await statusRes.json().catch(() => ({}));
 
-    if (!statusRes.ok) {
-      if (statusRes.status === 404 && i < 6) continue;
+    if (statusData.error_code && statusData.error_code !== 0) {
+      // ещё не готово или ошибка
+      const msg = String(statusData.error_msg || '');
+      if (/processing|pending|running|queue/i.test(msg) || statusData.error_code === 282000) {
+        continue;
+      }
 
       return {
         ok: false,
-        status: statusRes.status,
-        error: statusData.message || statusData.errorMsg ||
-          'Ошибка получения результата PaddleOCR'
+        status: 502,
+        error: statusData.error_msg || ('Baidu error: ' + statusData.error_code)
       };
     }
 
-    const state = String(
-      statusData.state ||
-      statusData.data?.state ||
-      statusData.status ||
-      statusData.data?.status ||
-      ''
-    ).toLowerCase();
+    const result = statusData.result || statusData.data || statusData;
+    const status = String(result.task_status || result.status || statusData.task_status || '').toLowerCase();
 
     // Готово
     if (
-      state === 'done' ||
-      state === 'success' ||
-      state === 'completed' ||
-      state === 'finished' ||
-      statusData.data?.extractResult ||
-      statusData.result
+      status === 'success' ||
+      status === 'done' ||
+      status === 'completed' ||
+      status === 'finished' ||
+      result.markdown ||
+      result.parse_result ||
+      result.words_result ||
+      result.layout_result
     ) {
-      const result = statusData.data?.extractResult || statusData.result || statusData.data || statusData;
-
       let text = '';
 
       if (typeof result.markdown === 'string') {
         text = result.markdown;
-      } else if (result.markdown?.text) {
-        text = result.markdown.text;
-      } else if (typeof result.prunedResult === 'string') {
-        text = result.prunedResult;
-      } else if (result.prunedResult) {
-        text = JSON.stringify(result.prunedResult, null, 2);
-      } else if (result.layoutParsingResult) {
-        text = JSON.stringify(result.layoutParsingResult, null, 2);
-      } else if (Array.isArray(result.pages)) {
-        text = result.pages.map((p) => p.markdown || p.text || JSON.stringify(p)).join('\n\n');
-      } else {
+      } else if (result.markdown_url) {
+        // иногда возвращают ссылку на markdown
+        try {
+          const mdRes = await fetch(result.markdown_url);
+          text = await mdRes.text();
+        } catch (_) {}
+      }
+
+      if (!text && result.parse_result) {
+        text = typeof result.parse_result === 'string'
+          ? result.parse_result
+          : JSON.stringify(result.parse_result, null, 2);
+      }
+
+      if (!text && result.layout_result) {
+        text = JSON.stringify(result.layout_result, null, 2);
+      }
+
+      if (!text) {
         text = JSON.stringify(result, null, 2);
       }
 
-      console.log('PaddleOCR done, text length:', text.length);
+      console.log('Baidu done, text length:', text.length);
 
       return {
         ok: true,
@@ -452,12 +459,11 @@ async function callPaddleOCR(imageBase64) {
       };
     }
 
-    if (state === 'failed' || state === 'error' || state === 'fail') {
+    if (status === 'failed' || status === 'error' || status === 'fail') {
       return {
         ok: false,
         status: 502,
-        error: 'PaddleOCR задача завершилась с ошибкой: ' +
-          (statusData.message || statusData.errorMsg || state)
+        error: 'Baidu задача завершилась с ошибкой: ' + (result.error_msg || status)
       };
     }
   }
@@ -465,7 +471,7 @@ async function callPaddleOCR(imageBase64) {
   return {
     ok: false,
     status: 504,
-    error: 'PaddleOCR: превышено время ожидания результата (jobId: ' + jobId + ')'
+    error: 'Baidu: превышено время ожидания результата (task_id: ' + taskId + ')'
   };
 }
 
