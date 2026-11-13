@@ -30,56 +30,70 @@ const norm = (s) => String(s || '').toLowerCase()
   .replace(/[kcmptoeayxhbsn]/g, (ch) => LAT[ch])
   .replace(/[^а-яё0-9]/g, '');
 
-const PROMPT = `Ты распознаёшь таблицу замен в расписании колледжа (ниже дан результат OCR).
+const PROMPT = `Задача: распознать таблицу ЗАМЕН в расписании колледжа с фото.
 
-ОЧЕНЬ ВАЖНО: НЕ ПРИДУМЫВАЙ ДАННЫЕ. НЕ ЗАПОЛНЯЙ ПУСТЫЕ ЯЧЕЙКИ ФРАЗОЙ «Пары нет».
+ЗАПРЕЩЕНО:
+- придумывать текст, которого нет на фото;
+- заполнять пустые ячейки фразой «Пары нет»;
+- переносить предмет/преподавателя/аудиторию из соседней строки;
+- пропускать строки таблицы;
+- добавлять строки, которых нет на фото;
+- писать что-либо кроме JSON.
 
-Столбцы слева направо:
-1) № пары — римская цифра I–VI в объединённой ячейке;
-2) учебная группа;
-3) п/г старого занятия;
-4) СТАРОЕ занятие: дисциплина, преподаватель, аудитория;
-5) п/г нового занятия;
-6) НОВОЕ занятие: дисциплина, преподаватель, аудитория;
-7) подпись (игнорируй).
+СТРУКТУРА ТАБЛИЦЫ (слева направо):
+1. № пары — римская цифра I, II, III, IV, V, VI. Часто в ОБЪЕДИНЁННОЙ ячейке на несколько строк.
+2. Группа — например мКСК-25-1, мИСПр-25-2, мТМТ-26-3.
+3. п/г старого занятия — 1, 2 или пусто (вся группа).
+4. Старое занятие — дисциплина, ФИО преподавателя, аудитория (могут быть в 1–3 строки внутри ячейки).
+5. п/г нового занятия — 1, 2 или пусто.
+6. Новое занятие — дисциплина, ФИО, аудитория ИЛИ явно «Пары нет».
+7. Подпись / примечание — ИГНОРИРУЙ.
 
-Верни ВСЕ строки таблицы сверху вниз.
+ФОРМАТ ОТВЕТА — только JSON:
+{"rows":[
+  {
+    "group":"мКСК-25-2",
+    "pair":5,
+    "sub":0,
+    "from":{"subject":"Математика","teacher":"Иванов И.И.","room":"201"},
+    "to":{"subject":"Физика","teacher":"Петров П.П.","room":"105"}
+  }
+]}
 
-Формат ответа — строго JSON-объект:
-{"rows":[{"group":"мКСК-25-2","pair":5,"sub":0,"from":{"subject":"","teacher":"","room":""},"to":{"subject":"","teacher":"","room":""}}]}
+ПРАВИЛА ПОЛЯМ:
 
-ПРАВИЛА РАСПОЗНАВАНИЯ:
+pair:
+- целое 1..6; I=1, II=2, III=3, IV=4, V=5, VI=6;
+- если ячейка пары объединена на N строк — одно и то же pair у всех этих строк;
+- если цифру нельзя уверенно прочитать — null.
 
-1. Читай каждую строку отдельно. Не переноси предметы, преподавателей и аудитории из соседних строк.
-2. Не додумывай текст по смыслу. Если текст неразборчив или ячейка пустая — оставляй соответствующее поле пустой строкой.
-3. Фразу «Пары нет» разрешено использовать ТОЛЬКО если именно эти слова отчётливо присутствуют в соответствующей ячейке.
-4. Пустая ячейка, прочерк, отсутствие предмета или отсутствие преподавателя НЕ означают «Пары нет».
-5. Если в новой части занятия явно написано «Пары нет», тогда to: null.
-6. Если в старой части занятия явно написано «Пары нет», тогда from: {"subject":"","teacher":"","room":""}.
-7. Если ты не уверен, написано ли «Пары нет», НЕ используй эту фразу. Оставь поля пустыми.
-8. Не заполняй все строки одной и той же фразой. Каждую ячейку проверяй отдельно.
-9. Не создавай дополнительные строки, которых нет в таблице.
+group:
+- как на фото, с дефисами и регистром букв (мКСК-25-1, мИСПр-25-2);
+- не нормализуй и не сокращай.
 
-НОМЕР ПАРЫ:
-- pair — целое число от 1 до 6.
-- I=1, II=2, III=3, IV=4, V=5, VI=6.
-- Номер пары записывай во ВСЕХ строках, относящихся к объединённой ячейке.
-- Если цифра не видна и её нельзя достоверно определить — pair: null.
+sub:
+- номер подгруппы СТАРОГО занятия: 1, 2 или 0 (если п/г нет / вся группа);
+- если старое = «Пары нет», бери п/г из нового;
+- если неясно — 0.
 
-ПОДГРУППА:
-- sub — 0 (вся группа), 1 или 2.
-- Бери номер подгруппы старого занятия.
-- Если в старом занятии явно написано «Пары нет», бери номер подгруппы нового занятия.
-- Если подгруппу определить нельзя — 0.
+from (старое занятие):
+- subject, teacher, room — только видимый текст;
+- если в ячейке явно «Пары нет» → {"subject":"","teacher":"","room":""};
+- пустая ячейка / прочерк → пустые строки, НЕ «Пары нет»;
+- teacher в виде «Фамилия И.О.» если так на фото;
+- room: склеивай переносы («20»+«1» → «201», «12-»+«05» → «12-05»).
 
-ОСТАЛЬНОЕ:
-- Название группы пиши с дефисами, как в таблице.
-- Текст предметов и преподавателей переноси точно.
-- Номера аудиторий, разбитые переносом строки, склеивай.
-- Не путай номер пары с номером аудитории.
-- Не используй сведения, которых нет в тексте.
+to (новое занятие):
+- если явно «Пары нет» / «пары нет» → null;
+- иначе тот же формат, что from;
+- не ставь null, если просто плохо видно — тогда пустые строки внутри объекта.
 
-Верни только JSON.`;
+ПОРЯДОК:
+- иди сверху вниз, по одной физической строке таблицы;
+- не объединяй разные группы в одну запись;
+- одна строка таблицы = один объект в rows.
+
+Верни ТОЛЬКО валидный JSON-объект {"rows":[...]}, без markdown и комментариев.``;
 
 const ROMAN = { i: 1, ii: 2, iii: 3, iv: 4, v: 5, vi: 6 };
 
@@ -298,649 +312,165 @@ const extractJson = (text) => {
   throw new Error('В ответе нет массива rows');
 };
 
+
 /**
- * Вызов официального Baidu Cloud PaddleOCR-VL
- * (aip.baidubce.com) — один access_token
+ * Vision: Groq Llama 4 Scout (бесплатно)
  */
-async function callPaddleOCR(imageBase64) {
-  const logs = [];
-  const log = (msg, data) => {
-    const line = data !== undefined
-      ? `${msg} ${typeof data === 'string' ? data : JSON.stringify(data).slice(0, 400)}`
-      : msg;
-    logs.push(line);
-    console.log('[BAIDU]', line);
-  };
-
-  const TOKEN =
-    process.env.BAIDU_ACCESS_TOKEN ||
-    process.env.PADDLEOCR_TOKEN ||
-    process.env.BAIDU_TOKEN;
-
-  if (!TOKEN) {
+async function callVision(imageBase64, mediaType, extra) {
+  const key = process.env.GROQ_API_KEY;
+  if (!key) {
     return {
       ok: false,
       status: 500,
-      error: 'Не задан BAIDU_ACCESS_TOKEN (или PADDLEOCR_TOKEN) в переменных окружения Vercel',
-      logs
+      error: 'Не задан GROQ_API_KEY. Возьми бесплатный ключ на https://console.groq.com/keys'
     };
   }
 
-  log('token present', `len=${TOKEN.length}, start=${TOKEN.slice(0, 6)}...`);
+  const model = process.env.GROQ_VISION_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct';
+  const prompt = extra ? `${PROMPT}\n\n${extra}` : PROMPT;
+  const dataUrl = `data:${mediaType || 'image/jpeg'};base64,${imageBase64}`;
 
-  // 1. Создаём задачу
-  const createUrl =
-    `https://aip.baidubce.com/rest/2.0/brain/online/v2/paddle-vl-parser/task?access_token=${encodeURIComponent(TOKEN)}`;
-
-  let createRes;
-  let createRaw = '';
-  try {
-    // Официальные поля Baidu Cloud: file_data + file_name
-    const form = new URLSearchParams();
-    form.set('file_data', imageBase64);
-    form.set('file_name', 'schedule.jpg');
-
-    log('create request', `imageBase64 len=${imageBase64?.length || 0}`);
-
-    createRes = await fetch(createUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
-      body: form.toString()
-    });
-
-    createRaw = await createRes.text();
-    log('create response status', createRes.status);
-    log('create response body', createRaw.slice(0, 600));
-  } catch (e) {
-    log('create network error', e.message);
-    return {
-      ok: false,
-      status: 502,
-      error: 'Сеть (Baidu create): ' + e.message,
-      logs
-    };
-  }
-
-  let createData = {};
-  try {
-    createData = JSON.parse(createRaw);
-  } catch (_) {
-    return {
-      ok: false,
-      status: 502,
-      error: 'Baidu create: не JSON ответ: ' + createRaw.slice(0, 300),
-      logs
-    };
-  }
-
-  if (!createRes.ok || (createData.error_code && createData.error_code !== 0)) {
-    return {
-      ok: false,
-      status: createRes.status || 502,
-      error: createData.error_msg || createData.error_code ||
-        ('Ошибка создания задачи Baidu: ' + createRaw.slice(0, 300)),
-      logs,
-      createData
-    };
-  }
-
-  const taskId =
-    createData.task_id ||
-    createData.result?.task_id ||
-    createData.data?.task_id;
-
-  if (!taskId) {
-    return {
-      ok: false,
-      status: 502,
-      error: 'Baidu не вернул task_id: ' + createRaw.slice(0, 400),
-      logs,
-      createData
-    };
-  }
-
-  log('task created', taskId);
-
-  // 2. Поллим результат
-  const queryUrl =
-    `https://aip.baidubce.com/rest/2.0/brain/online/v2/paddle-vl-parser/task/query?access_token=${encodeURIComponent(TOKEN)}`;
-
-  for (let i = 0; i < 30; i++) {
-    await sleep(3000);
-    log(`poll #${i + 1}`);
-
-    let statusRes;
-    let statusRaw = '';
-    try {
-      const form = new URLSearchParams();
-      form.set('task_id', taskId);
-
-      statusRes = await fetch(queryUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        body: form.toString()
-      });
-
-      statusRaw = await statusRes.text();
-      log(`poll #${i + 1} status`, statusRes.status);
-      log(`poll #${i + 1} body`, statusRaw.slice(0, 500));
-    } catch (e) {
-      log(`poll #${i + 1} network error`, e.message);
-      continue;
-    }
-
-    let statusData = {};
-    try {
-      statusData = JSON.parse(statusRaw);
-    } catch (_) {
-      log(`poll #${i + 1} not json`);
-      continue;
-    }
-
-    if (statusData.error_code && statusData.error_code !== 0) {
-      const msg = String(statusData.error_msg || '');
-      if (/processing|pending|running|queue|not ready/i.test(msg) || statusData.error_code === 282000) {
-        log(`poll #${i + 1} still processing`, msg);
-        continue;
-      }
-
-      return {
-        ok: false,
-        status: 502,
-        error: statusData.error_msg || ('Baidu error: ' + statusData.error_code),
-        logs,
-        statusData
-      };
-    }
-
-    const result = statusData.result || statusData.data || statusData;
-    const status = String(
-      result.task_status || result.status || statusData.task_status || statusData.status || ''
-    ).toLowerCase();
-
-    log(`poll #${i + 1} task_status`, status || '(empty)');
-
-    // Готово
-    if (
-      status === 'success' ||
-      status === 'done' ||
-      status === 'completed' ||
-      status === 'finished' ||
-      result.markdown ||
-      result.parse_result ||
-      result.words_result ||
-      result.layout_result ||
-      result.markdown_url
-    ) {
-      let text = '';
-      let textSource = 'none';
-
-      if (typeof result.markdown === 'string' && result.markdown.trim()) {
-        text = result.markdown;
-        textSource = 'markdown';
-      } else if (result.markdown_url) {
-        try {
-          const mdRes = await fetch(result.markdown_url);
-          text = await mdRes.text();
-          textSource = 'markdown_url';
-        } catch (e) {
-          log('markdown_url fetch failed', e.message);
-        }
-      }
-
-      if (!text && result.parse_result_url) {
-        try {
-          const prRes = await fetch(result.parse_result_url);
-          const prJson = await prRes.json();
-          // Собираем текст/таблицы со всех страниц
-          const pages = prJson.pages || [];
-          const chunks = [];
-          for (const page of pages) {
-            if (page.text) chunks.push(page.text);
-            if (Array.isArray(page.tables)) {
-              for (const t of page.tables) {
-                if (t.markdown) chunks.push(t.markdown);
-              }
-            }
-            if (Array.isArray(page.layouts)) {
-              for (const l of page.layouts) {
-                if (l.text) chunks.push(l.text);
-              }
-            }
-          }
-          text = chunks.join('\n\n') || JSON.stringify(prJson, null, 2);
-          textSource = 'parse_result_url';
-        } catch (e) {
-          log('parse_result_url fetch failed', e.message);
-        }
-      }
-
-      if (!text && result.parse_result) {
-        text = typeof result.parse_result === 'string'
-          ? result.parse_result
-          : JSON.stringify(result.parse_result, null, 2);
-        textSource = 'parse_result';
-      }
-
-      if (!text && result.layout_result) {
-        text = JSON.stringify(result.layout_result, null, 2);
-        textSource = 'layout_result';
-      }
-
-      if (!text && result.words_result) {
-        text = JSON.stringify(result.words_result, null, 2);
-        textSource = 'words_result';
-      }
-
-      if (!text) {
-        text = JSON.stringify(result, null, 2);
-        textSource = 'full_result_json';
-      }
-
-      log('done', `source=${textSource}, len=${text.length}`);
-
-      return {
-        ok: true,
-        status: 200,
-        text: String(text).slice(0, 35000),
-        raw: result,
-        logs,
-        textSource
-      };
-    }
-
-    if (status === 'failed' || status === 'error' || status === 'fail') {
-      return {
-        ok: false,
-        status: 502,
-        error: 'Baidu задача завершилась с ошибкой: ' + (result.error_msg || status),
-        logs,
-        result
-      };
-    }
-  }
-
-  return {
-    ok: false,
-    status: 504,
-    error: 'Baidu: превышено время ожидания результата (task_id: ' + taskId + ')',
-    logs
+  const body = {
+    model,
+    max_completion_tokens: 8000,
+    temperature: 0,
+    response_format: { type: 'json_object' },
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'text', text: prompt },
+        { type: 'image_url', image_url: { url: dataUrl } }
+      ]
+    }]
   };
-}
 
-/**
- * Текст OCR + PROMPT → строгий JSON
- * Поддерживает: Groq → OpenAI → Gemini → Anthropic
- */
-async function callTextModel(ocrText, extra) {
-  const prompt = extra
-    ? `${PROMPT}\n\n--- OCR РЕЗУЛЬТАТ ---\n${ocrText}\n\n${extra}`
-    : `${PROMPT}\n\n--- OCR РЕЗУЛЬТАТ ---\n${ocrText}`;
+  const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      Authorization: `Bearer ${key}`
+    },
+    body: JSON.stringify(body)
+  });
 
-  // 1) Groq
-  if (process.env.GROQ_API_KEY) {
-    const body = {
-      model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
-      max_completion_tokens: 8000,
-      temperature: 0,
-      response_format: { type: 'json_object' },
-      messages: [{ role: 'user', content: prompt }]
-    };
-
-    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        Authorization: `Bearer ${process.env.GROQ_API_KEY}`
-      },
-      body: JSON.stringify(body)
-    });
-
-    const data = await r.json().catch(() => ({}));
-    const content = data.choices?.[0]?.message?.content;
-    const text = Array.isArray(content)
-      ? content.map((part) => part.text || '').join('')
-      : (typeof content === 'string' ? content : '');
-
-    return {
-      ok: r.ok,
-      status: r.status,
-      error: data.error?.message || data.message || 'Ошибка Groq API',
-      text,
-      retryAfterMs: getRetryDelay(r.headers, data.error?.message, 0)
-    };
-  }
-
-  // 2) OpenAI
-  if (process.env.OPENAI_API_KEY) {
-    const body = {
-      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
-      max_tokens: 8000,
-      temperature: 0,
-      response_format: { type: 'json_object' },
-      messages: [{ role: 'user', content: prompt }]
-    };
-
-    const r = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
-      },
-      body: JSON.stringify(body)
-    });
-
-    const data = await r.json().catch(() => ({}));
-    const text = data.choices?.[0]?.message?.content || '';
-
-    return {
-      ok: r.ok,
-      status: r.status,
-      error: data.error?.message || 'Ошибка OpenAI API',
-      text,
-      retryAfterMs: getRetryDelay(r.headers, data.error?.message, 0)
-    };
-  }
-
-  // 3) Gemini
-  if (process.env.GEMINI_API_KEY) {
-    const model = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`;
-
-    const body = {
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0,
-        maxOutputTokens: 8000,
-        responseMimeType: 'application/json'
-      }
-    };
-
-    const r = await fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-
-    const data = await r.json().catch(() => ({}));
-    const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('') || '';
-
-    return {
-      ok: r.ok,
-      status: r.status,
-      error: data.error?.message || 'Ошибка Gemini API',
-      text,
-      retryAfterMs: 0
-    };
-  }
-
-  // 4) Anthropic
-  if (process.env.ANTHROPIC_API_KEY) {
-    const body = {
-      model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514',
-      max_tokens: 8000,
-      temperature: 0,
-      messages: [{ role: 'user', content: prompt }]
-    };
-
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify(body)
-    });
-
-    const data = await r.json().catch(() => ({}));
-    const text = (data.content || []).map((b) => b.text || '').join('');
-
-    return {
-      ok: r.ok,
-      status: r.status,
-      error: data.error?.message || 'Ошибка Anthropic API',
-      text,
-      retryAfterMs: 0
-    };
-  }
+  const data = await r.json().catch(() => ({}));
+  const content = data.choices?.[0]?.message?.content;
+  const text = Array.isArray(content)
+    ? content.map((p) => p.text || '').join('')
+    : (typeof content === 'string' ? content : '');
 
   return {
-    ok: false,
-    status: 500,
-    error: 'Нет ключа для текстовой модели: задай GROQ_API_KEY или OPENAI_API_KEY или GEMINI_API_KEY или ANTHROPIC_API_KEY'
+    ok: r.ok,
+    status: r.status,
+    error: data.error?.message || data.message || 'Ошибка Groq API',
+    text,
+    model,
+    retryAfterMs: getRetryDelay(r.headers, data.error?.message, 0)
   };
 }
 
 async function recognize(image, mt) {
   const debug = {
     stage: 'start',
-    ocrTextLength: 0,
-    ocrPreview: '',
-    ocrTextSource: '',
-    baiduLogs: [],
-    groqAttempts: 0,
-    lastGroqError: null,
-    lastGroqRaw: '',
+    model: process.env.GROQ_VISION_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct',
+    attempts: 0,
+    lastError: null,
+    lastRaw: '',
     imageLen: image?.length || 0
   };
 
-  console.log('[DEBUG] recognize start, image len:', debug.imageLen);
-
-  // === Шаг 1: Baidu OCR ===
-  let ocrResult;
-  try {
-    ocrResult = await callPaddleOCR(image);
-  } catch (e) {
-    console.error('[DEBUG] Baidu network error:', e.message);
-    return {
-      error: 'Сеть (Baidu): ' + e.message,
-      status: 502,
-      debug: { ...debug, stage: 'baidu_network_error', baiduError: e.message }
-    };
-  }
-
-  debug.baiduLogs = ocrResult.logs || [];
-
-  if (!ocrResult.ok) {
-    console.error('[DEBUG] Baidu error:', ocrResult.status, ocrResult.error);
-    return {
-      error: ocrResult.error,
-      status: ocrResult.status || 502,
-      debug: {
-        ...debug,
-        stage: 'baidu_error',
-        baiduError: ocrResult.error,
-        baiduCreateData: ocrResult.createData || null,
-        baiduStatusData: ocrResult.statusData || null
-      }
-    };
-  }
-
-  debug.stage = 'baidu_ok';
-  debug.ocrTextLength = ocrResult.text?.length || 0;
-  debug.ocrPreview = String(ocrResult.text || '').slice(0, 800);
-  debug.ocrTextSource = ocrResult.textSource || '';
-
-  console.log('[DEBUG] Baidu OK, text length:', debug.ocrTextLength, 'source:', debug.ocrTextSource);
-  console.log('[DEBUG] OCR preview:', debug.ocrPreview);
-
-  // === Шаг 2: Текст → JSON через Groq ===
   let extra = '';
   let lastErr = null;
   let lastText = '';
 
-  for (let attempt = 0; attempt < 5; attempt++) {
-    debug.groqAttempts = attempt + 1;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    debug.attempts = attempt + 1;
     let result;
 
     try {
-      result = await callTextModel(ocrResult.text, extra);
+      result = await callVision(image, mt, extra);
     } catch (e) {
-      lastErr = {
-        status: 502,
-        error: 'Сеть (Groq): ' + e.message
-      };
-      debug.lastGroqError = lastErr.error;
-      console.error('[DEBUG] Groq network error:', e.message);
+      lastErr = { status: 502, error: 'Сеть (Groq): ' + e.message };
+      debug.lastError = lastErr.error;
       await sleep(1500 * (attempt + 1));
       continue;
     }
 
     if (!result.ok) {
       lastErr = result;
-      debug.lastGroqError = result.error;
-      console.error('[DEBUG] Groq API error:', result.status, result.error);
+      debug.lastError = result.error;
+      console.error('[DEBUG] Groq error:', result.status, result.error);
 
       if (result.status === 429) {
         const wait = getRetryDelay(null, result.error, attempt);
-        console.log('[DEBUG] Groq rate limit, wait', wait, 'ms');
-        await sleep(wait + Math.floor(Math.random() * 700));
+        await sleep(wait + Math.floor(Math.random() * 500));
         continue;
       }
-
       if (result.status >= 500) {
         await sleep(2000 * (attempt + 1));
         continue;
       }
-
-      return {
-        error: result.error,
-        status: 502,
-        debug
-      };
+      return { error: result.error, status: result.status || 502, debug };
     }
 
     lastText = result.text;
-    debug.lastGroqRaw = String(result.text || '').slice(0, 1200);
+    debug.lastRaw = String(result.text || '').slice(0, 1000);
+    debug.model = result.model;
 
     try {
       const all = extractJson(result.text);
-
-      console.log('[DEBUG] JSON parsed, rows:', all.length);
-      console.log('[DEBUG] First rows:', JSON.stringify(all.slice(0, 5)));
-
+      console.log('[DEBUG] rows:', all.length);
       return { all, debug };
     } catch (e) {
-      console.error('[DEBUG] JSON parse error:', e.message);
-      console.error('[DEBUG] Raw Groq response:', result.text?.slice(0, 800));
+      console.error('[DEBUG] JSON parse:', e.message, result.text?.slice(0, 400));
       debug.lastJsonError = e.message;
-
-      extra = `Предыдущий ответ не подошёл.
-Верни строго JSON-объект {"rows":[...]}.
-Не добавляй пояснений.
-Не пропускай строки таблицы.
-Не выдумывай «Пары нет»: используй эту фразу только если она отчётливо есть в тексте.`;
+      extra = `Предыдущий ответ не JSON. Верни строго {"rows":[...]}. Без пояснений.`;
     }
   }
 
   return lastText
-    ? {
-        error: 'Не удалось разобрать ответ модели',
-        status: 502,
-        raw: lastText,
-        debug
-      }
-    : {
-        error: lastErr?.error || 'Ошибка API после нескольких попыток',
-        status: 502,
-        debug
-      };
+    ? { error: 'Не удалось разобрать ответ модели', status: 502, raw: lastText, debug }
+    : { error: lastErr?.error || 'Ошибка API', status: 502, debug };
 }
 
 module.exports = async (req, res) => {
-  // === ВРЕМЕННАЯ ПРОВЕРКА ДЕПЛОЯ ===
-  // Если видишь эту ошибку — новый скрипт работает.
-  // После проверки скажи — уберу.
-  if (req.body?.debug_ping === true) {
-    return res.status(200).json({
-      ok: true,
-      message: 'NEW_PARSE_JS_LOADED_v3',
-      time: new Date().toISOString(),
-      hasBaiduToken: !!(process.env.BAIDU_ACCESS_TOKEN || process.env.PADDLEOCR_TOKEN || process.env.BAIDU_TOKEN),
-      hasGroqKey: !!process.env.GROQ_API_KEY
-    });
-  }
-
-  if (req.method !== 'POST') {
-    return res.status(405).end();
-  }
-
-  if (!authed(req)) {
-    return res.status(401).json({ error: 'Неверный пароль' });
-  }
+  if (req.method !== 'POST') return res.status(405).end();
+  if (!authed(req)) return res.status(401).json({ error: 'Неверный пароль' });
 
   const { image, media_type } = req.body || {};
-
   if (!image) {
-    return res.status(400).json({
-      error: 'Нет изображения. Если видишь этот текст — новый parse.js загружен (v3).'
-    });
+    return res.status(400).json({ error: 'Нет изображения' });
   }
 
   const out = await recognize(image, media_type || 'image/jpeg');
 
   if (out.error) {
-    console.error('[DEBUG] recognize failed:', out.error);
     return res.status(out.status || 502).json({
       error: out.error,
       raw: out.raw || null,
-      debug: out.debug || null,
-      baiduLogs: out.debug?.baiduLogs || []
+      debug: out.debug || null
     });
   }
 
   let all = out.all;
-
-  if (!Array.isArray(all)) {
-    all = Array.isArray(all?.rows) ? all.rows : [];
-  }
-
+  if (!Array.isArray(all)) all = Array.isArray(all?.rows) ? all.rows : [];
   all = all.filter((x) => x && typeof x === 'object');
 
-  // Восстановление номера пары в объединённых ячейках
   const nums = all.map((x) => pairNum(x));
-
-  const known_i = nums
-    .map((n, i) => (n ? i : -1))
-    .filter((i) => i >= 0);
+  const known_i = nums.map((n, i) => (n ? i : -1)).filter((i) => i >= 0);
 
   all.forEach((x, i) => {
-    if (nums[i]) {
-      x._pair = nums[i];
-      return;
-    }
-
+    if (nums[i]) { x._pair = nums[i]; return; }
     const prev = known_i.filter((k) => k < i).pop();
     const next = known_i.find((k) => k > i);
-
-    if (prev === undefined && next === undefined) {
-      x._pair = 0;
-      return;
-    }
-
-    if (prev === undefined) {
-      x._pair = nums[next];
-      return;
-    }
-
-    if (next === undefined) {
-      x._pair = nums[prev];
-      return;
-    }
-
-    x._pair = (i - prev) <= (next - i)
-      ? nums[prev]
-      : nums[next];
+    if (prev === undefined && next === undefined) { x._pair = 0; return; }
+    if (prev === undefined) { x._pair = nums[next]; return; }
+    if (next === undefined) { x._pair = nums[prev]; return; }
+    x._pair = (i - prev) <= (next - i) ? nums[prev] : nums[next];
   });
 
   const warnings = [];
   const known = all.filter((x) => GROUPS[norm(x.group)]);
-
   const unknownGroups = all
     .filter((x) => !GROUPS[norm(x.group)])
     .map((x) => x.group)
@@ -950,25 +480,11 @@ module.exports = async (req, res) => {
     .map((x) => {
       const group = GROUPS[norm(x.group)];
       const where = `${group}, пара ${x._pair}`;
-
       const fromNoPairs = isNoPairs(x.from);
       const toNoPairs = isNoPairs(x.to);
-
-      const from = fromNoPairs
-        ? emptyLesson()
-        : fixLesson(x.from, warnings, where);
-
-      const to = toNoPairs || !x.to
-        ? null
-        : fixLesson(x.to, warnings, where);
-
-      return {
-        group,
-        pair: x._pair,
-        sub: Number(x.sub) || 0,
-        from,
-        to
-      };
+      const from = fromNoPairs ? emptyLesson() : fixLesson(x.from, warnings, where);
+      const to = toNoPairs || !x.to ? null : fixLesson(x.to, warnings, where);
+      return { group, pair: x._pair, sub: Number(x.sub) || 0, from, to };
     })
     .filter((r) => r.pair > 0);
 
@@ -979,40 +495,28 @@ module.exports = async (req, res) => {
     knownGroups: known.length,
     finalRows: rows.length,
     unknownGroups: [...new Set(unknownGroups)].slice(0, 10),
-    pairsFound: nums.filter(Boolean).length
+    pairsFound: nums.filter(Boolean).length,
+    scriptVersion: 'groq-llama4-scout-v1'
   };
 
-  console.log('[DEBUG] Final:', JSON.stringify(debugInfo));
-
-  // Если ничего не распознали — возвращаем ошибку с подробностями
   if (rows.length === 0) {
     const reason = [
-      `stage=${debugInfo.stage}`,
-      `OCR длина: ${debugInfo.ocrTextLength || 0}`,
-      `OCR source: ${debugInfo.ocrTextSource || '-'}`,
-      `Распознано строк: ${debugInfo.parsedRows || 0}`,
-      `Известных групп: ${debugInfo.knownGroups || 0}`,
-      `Пар найдено: ${debugInfo.pairsFound || 0}`,
-      debugInfo.unknownGroups?.length
-        ? `Неизвестные группы: ${debugInfo.unknownGroups.join(', ')}`
-        : null,
-      debugInfo.lastGroqError
-        ? `Groq error: ${debugInfo.lastGroqError}`
-        : null,
-      debugInfo.ocrPreview
-        ? `OCR: ${String(debugInfo.ocrPreview).slice(0, 150)}`
-        : 'OCR пустой'
+      `model=${debugInfo.model}`,
+      `parsed=${debugInfo.parsedRows}`,
+      `known=${debugInfo.knownGroups}`,
+      `pairs=${debugInfo.pairsFound}`,
+      debugInfo.unknownGroups?.length ? `unknown=${debugInfo.unknownGroups.join(',')}` : null,
+      debugInfo.lastError ? `err=${debugInfo.lastError}` : null,
+      debugInfo.lastRaw ? `raw=${String(debugInfo.lastRaw).slice(0, 120)}` : null
     ].filter(Boolean).join(' | ');
 
     return res.status(422).json({
-      error: '[v3] Не удалось распознать ни одной строки. ' + reason,
+      error: '[groq-v1] Не удалось распознать ни одной строки. ' + reason,
       rows: [],
       total: all.length,
       sample: all.slice(0, 8),
       debug: debugInfo,
-      baiduLogs: debugInfo.baiduLogs || [],
-      warnings: [...new Set(warnings)],
-      scriptVersion: 'parse-js-v3-debug'
+      warnings: [...new Set(warnings)]
     });
   }
 
