@@ -162,6 +162,10 @@ $('go').onclick = async () => {
             j.scriptVersion || null,
             j.debug ? `stage=${j.debug.stage}` : null,
             j.debug ? `ocrLen=${j.debug.ocrTextLength}` : null,
+            (j.debug?.baiduError || j.error) ? `baiduError=${String(j.debug?.baiduError || j.error).slice(0, 220)}` : null,
+            Array.isArray(j.baiduLogs) && j.baiduLogs.length
+              ? `logs=${j.baiduLogs.slice(-4).join(' ; ').slice(0, 280)}`
+              : null,
             j.debug?.ocrPreview ? `ocr=${String(j.debug.ocrPreview).slice(0, 100)}` : null,
             Array.isArray(j.sample) && j.sample.length ? `sample=${JSON.stringify(j.sample).slice(0, 120)}` : null
           ].filter(Boolean);
