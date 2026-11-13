@@ -54,7 +54,17 @@ async function readApiResponse(response) {
     const preview = raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 180);
     throw new Error(`Сервер вернул не JSON (HTTP ${response.status})${preview ? ': ' + preview : ''}`);
   }
-  if (!response.ok) throw new Error(data.error || `Ошибка сервера HTTP ${response.status}`);
+  if (!response.ok) {
+    let msg = data.error || `Ошибка сервера HTTP ${response.status}`;
+    if (data.debug) {
+      const d = data.debug;
+      msg += ` | stage=${d.stage || '-'} ocrLen=${d.ocrTextLength ?? '-'} rows=${d.parsedRows ?? '-'}`;
+    }
+    if (Array.isArray(data.baiduLogs) && data.baiduLogs.length) {
+      msg += ' | baidu: ' + data.baiduLogs.slice(-3).join(' ; ');
+    }
+    throw new Error(msg);
+  }
   return data;
 }
 
@@ -144,10 +154,23 @@ $('go').onclick = async () => {
         const j = await readApiResponse(r);
         const rows = Array.isArray(j.rows) ? j.rows : [];
         totalRecognized += Number(j.total) || rows.length;
+
+        // Даже при HTTP 200 и пустых rows показываем диагностику
+        if (!rows.length) {
+          const parts = [
+            `total=${j.total ?? 0}`,
+            j.scriptVersion || null,
+            j.debug ? `stage=${j.debug.stage}` : null,
+            j.debug ? `ocrLen=${j.debug.ocrTextLength}` : null,
+            j.debug?.ocrPreview ? `ocr=${String(j.debug.ocrPreview).slice(0, 100)}` : null,
+            Array.isArray(j.sample) && j.sample.length ? `sample=${JSON.stringify(j.sample).slice(0, 120)}` : null
+          ].filter(Boolean);
+          failures.push(`${file.name}: пусто (${parts.join(', ') || 'нет debug — задеплоен старый parse.js'})`);
+        }
+
         for (const row of rows) {
           const key = `${row.group}|${row.pair}|${row.sub || 0}`;
           if (combined.has(key)) duplicates++;
-          // При повторе одной и той же группы/пары/подгруппы используем результат последнего фото.
           combined.set(key, row);
         }
       } catch (e) {
@@ -159,7 +182,7 @@ $('go').onclick = async () => {
     if (!rows.length) {
       $('json').hidden = true;
       $('pub').hidden = true;
-      return say('Не удалось распознать ни одной строки. ' + failures.join(' | '));
+      return say('Не удалось распознать ни одной строки. ' + (failures.length ? failures.join(' | ') : 'Нет деталей'));
     }
 
     $('json').value = JSON.stringify(rows, null, 1);
