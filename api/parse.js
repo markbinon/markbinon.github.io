@@ -326,7 +326,7 @@ async function callVision(imageBase64, mediaType, extra) {
     };
   }
 
-  const model = process.env.GROQ_VISION_MODEL || 'whisper-large-v3-turbo';
+  const model = process.env.GROQ_VISION_MODEL || 'qwen/qwen3.8-27b';
   const prompt = extra ? `${PROMPT}\n\n${extra}` : PROMPT;
   const dataUrl = `data:${mediaType || 'image/jpeg'};base64,${imageBase64}`;
 
