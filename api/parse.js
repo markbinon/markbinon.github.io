@@ -303,6 +303,15 @@ const extractJson = (text) => {
  * (aip.baidubce.com) — один access_token
  */
 async function callPaddleOCR(imageBase64) {
+  const logs = [];
+  const log = (msg, data) => {
+    const line = data !== undefined
+      ? `${msg} ${typeof data === 'string' ? data : JSON.stringify(data).slice(0, 400)}`
+      : msg;
+    logs.push(line);
+    console.log('[BAIDU]', line);
+  };
+
   const TOKEN =
     process.env.BAIDU_ACCESS_TOKEN ||
     process.env.PADDLEOCR_TOKEN ||
@@ -312,21 +321,25 @@ async function callPaddleOCR(imageBase64) {
     return {
       ok: false,
       status: 500,
-      error: 'Не задан BAIDU_ACCESS_TOKEN (или PADDLEOCR_TOKEN) в переменных окружения Vercel'
+      error: 'Не задан BAIDU_ACCESS_TOKEN (или PADDLEOCR_TOKEN) в переменных окружения Vercel',
+      logs
     };
   }
+
+  log('token present', `len=${TOKEN.length}, start=${TOKEN.slice(0, 6)}...`);
 
   // 1. Создаём задачу
   const createUrl =
     `https://aip.baidubce.com/rest/2.0/brain/online/v2/paddle-vl-parser/task?access_token=${encodeURIComponent(TOKEN)}`;
 
   let createRes;
+  let createRaw = '';
   try {
     const form = new URLSearchParams();
-    form.set('file', imageBase64);           // base64 картинки
-    // form.set('url', '');                  // можно вместо file
-    form.set('file_type', 'image');          // image / pdf
-    // form.set('language_type', 'CHN_ENG');
+    form.set('file', imageBase64);
+    form.set('file_type', 'image');
+
+    log('create request', `imageBase64 len=${imageBase64?.length || 0}`);
 
     createRes = await fetch(createUrl, {
       method: 'POST',
@@ -335,22 +348,40 @@ async function callPaddleOCR(imageBase64) {
       },
       body: form.toString()
     });
+
+    createRaw = await createRes.text();
+    log('create response status', createRes.status);
+    log('create response body', createRaw.slice(0, 600));
   } catch (e) {
+    log('create network error', e.message);
     return {
       ok: false,
       status: 502,
-      error: 'Сеть (Baidu create): ' + e.message
+      error: 'Сеть (Baidu create): ' + e.message,
+      logs
     };
   }
 
-  const createData = await createRes.json().catch(() => ({}));
+  let createData = {};
+  try {
+    createData = JSON.parse(createRaw);
+  } catch (_) {
+    return {
+      ok: false,
+      status: 502,
+      error: 'Baidu create: не JSON ответ: ' + createRaw.slice(0, 300),
+      logs
+    };
+  }
 
-  if (!createRes.ok || createData.error_code) {
+  if (!createRes.ok || (createData.error_code && createData.error_code !== 0)) {
     return {
       ok: false,
       status: createRes.status || 502,
       error: createData.error_msg || createData.error_code ||
-        ('Ошибка создания задачи Baidu: ' + JSON.stringify(createData).slice(0, 300))
+        ('Ошибка создания задачи Baidu: ' + createRaw.slice(0, 300)),
+      logs,
+      createData
     };
   }
 
@@ -363,11 +394,13 @@ async function callPaddleOCR(imageBase64) {
     return {
       ok: false,
       status: 502,
-      error: 'Baidu не вернул task_id: ' + JSON.stringify(createData).slice(0, 400)
+      error: 'Baidu не вернул task_id: ' + createRaw.slice(0, 400),
+      logs,
+      createData
     };
   }
 
-  console.log('Baidu task created:', taskId);
+  log('task created', taskId);
 
   // 2. Поллим результат
   const queryUrl =
@@ -375,8 +408,10 @@ async function callPaddleOCR(imageBase64) {
 
   for (let i = 0; i < 30; i++) {
     await sleep(3000);
+    log(`poll #${i + 1}`);
 
     let statusRes;
+    let statusRaw = '';
     try {
       const form = new URLSearchParams();
       form.set('task_id', taskId);
@@ -388,29 +423,45 @@ async function callPaddleOCR(imageBase64) {
         },
         body: form.toString()
       });
+
+      statusRaw = await statusRes.text();
+      log(`poll #${i + 1} status`, statusRes.status);
+      log(`poll #${i + 1} body`, statusRaw.slice(0, 500));
     } catch (e) {
-      console.error('Baidu poll network error:', e.message);
+      log(`poll #${i + 1} network error`, e.message);
       continue;
     }
 
-    const statusData = await statusRes.json().catch(() => ({}));
+    let statusData = {};
+    try {
+      statusData = JSON.parse(statusRaw);
+    } catch (_) {
+      log(`poll #${i + 1} not json`);
+      continue;
+    }
 
     if (statusData.error_code && statusData.error_code !== 0) {
-      // ещё не готово или ошибка
       const msg = String(statusData.error_msg || '');
-      if (/processing|pending|running|queue/i.test(msg) || statusData.error_code === 282000) {
+      if (/processing|pending|running|queue|not ready/i.test(msg) || statusData.error_code === 282000) {
+        log(`poll #${i + 1} still processing`, msg);
         continue;
       }
 
       return {
         ok: false,
         status: 502,
-        error: statusData.error_msg || ('Baidu error: ' + statusData.error_code)
+        error: statusData.error_msg || ('Baidu error: ' + statusData.error_code),
+        logs,
+        statusData
       };
     }
 
     const result = statusData.result || statusData.data || statusData;
-    const status = String(result.task_status || result.status || statusData.task_status || '').toLowerCase();
+    const status = String(
+      result.task_status || result.status || statusData.task_status || statusData.status || ''
+    ).toLowerCase();
+
+    log(`poll #${i + 1} task_status`, status || '(empty)');
 
     // Готово
     if (
@@ -421,41 +472,56 @@ async function callPaddleOCR(imageBase64) {
       result.markdown ||
       result.parse_result ||
       result.words_result ||
-      result.layout_result
+      result.layout_result ||
+      result.markdown_url
     ) {
       let text = '';
+      let textSource = 'none';
 
-      if (typeof result.markdown === 'string') {
+      if (typeof result.markdown === 'string' && result.markdown.trim()) {
         text = result.markdown;
+        textSource = 'markdown';
       } else if (result.markdown_url) {
-        // иногда возвращают ссылку на markdown
         try {
           const mdRes = await fetch(result.markdown_url);
           text = await mdRes.text();
-        } catch (_) {}
+          textSource = 'markdown_url';
+        } catch (e) {
+          log('markdown_url fetch failed', e.message);
+        }
       }
 
       if (!text && result.parse_result) {
         text = typeof result.parse_result === 'string'
           ? result.parse_result
           : JSON.stringify(result.parse_result, null, 2);
+        textSource = 'parse_result';
       }
 
       if (!text && result.layout_result) {
         text = JSON.stringify(result.layout_result, null, 2);
+        textSource = 'layout_result';
+      }
+
+      if (!text && result.words_result) {
+        text = JSON.stringify(result.words_result, null, 2);
+        textSource = 'words_result';
       }
 
       if (!text) {
         text = JSON.stringify(result, null, 2);
+        textSource = 'full_result_json';
       }
 
-      console.log('Baidu done, text length:', text.length);
+      log('done', `source=${textSource}, len=${text.length}`);
 
       return {
         ok: true,
         status: 200,
         text: String(text).slice(0, 35000),
-        raw: result
+        raw: result,
+        logs,
+        textSource
       };
     }
 
@@ -463,7 +529,9 @@ async function callPaddleOCR(imageBase64) {
       return {
         ok: false,
         status: 502,
-        error: 'Baidu задача завершилась с ошибкой: ' + (result.error_msg || status)
+        error: 'Baidu задача завершилась с ошибкой: ' + (result.error_msg || status),
+        logs,
+        result
       };
     }
   }
@@ -471,7 +539,8 @@ async function callPaddleOCR(imageBase64) {
   return {
     ok: false,
     status: 504,
-    error: 'Baidu: превышено время ожидания результата (task_id: ' + taskId + ')'
+    error: 'Baidu: превышено время ожидания результата (task_id: ' + taskId + ')',
+    logs
   };
 }
 
@@ -532,10 +601,15 @@ async function recognize(image, mt) {
     stage: 'start',
     ocrTextLength: 0,
     ocrPreview: '',
+    ocrTextSource: '',
+    baiduLogs: [],
     groqAttempts: 0,
     lastGroqError: null,
-    lastGroqRaw: ''
+    lastGroqRaw: '',
+    imageLen: image?.length || 0
   };
+
+  console.log('[DEBUG] recognize start, image len:', debug.imageLen);
 
   // === Шаг 1: Baidu OCR ===
   let ocrResult;
@@ -546,24 +620,33 @@ async function recognize(image, mt) {
     return {
       error: 'Сеть (Baidu): ' + e.message,
       status: 502,
-      debug
+      debug: { ...debug, stage: 'baidu_network_error', baiduError: e.message }
     };
   }
+
+  debug.baiduLogs = ocrResult.logs || [];
 
   if (!ocrResult.ok) {
     console.error('[DEBUG] Baidu error:', ocrResult.status, ocrResult.error);
     return {
       error: ocrResult.error,
       status: ocrResult.status || 502,
-      debug: { ...debug, stage: 'baidu_error', baiduError: ocrResult.error }
+      debug: {
+        ...debug,
+        stage: 'baidu_error',
+        baiduError: ocrResult.error,
+        baiduCreateData: ocrResult.createData || null,
+        baiduStatusData: ocrResult.statusData || null
+      }
     };
   }
 
   debug.stage = 'baidu_ok';
   debug.ocrTextLength = ocrResult.text?.length || 0;
-  debug.ocrPreview = String(ocrResult.text || '').slice(0, 500);
+  debug.ocrPreview = String(ocrResult.text || '').slice(0, 800);
+  debug.ocrTextSource = ocrResult.textSource || '';
 
-  console.log('[DEBUG] Baidu OK, text length:', debug.ocrTextLength);
+  console.log('[DEBUG] Baidu OK, text length:', debug.ocrTextLength, 'source:', debug.ocrTextSource);
   console.log('[DEBUG] OCR preview:', debug.ocrPreview);
 
   // === Шаг 2: Текст → JSON через Groq ===
@@ -613,7 +696,7 @@ async function recognize(image, mt) {
     }
 
     lastText = result.text;
-    debug.lastGroqRaw = String(result.text || '').slice(0, 800);
+    debug.lastGroqRaw = String(result.text || '').slice(0, 1200);
 
     try {
       const all = extractJson(result.text);
@@ -625,6 +708,7 @@ async function recognize(image, mt) {
     } catch (e) {
       console.error('[DEBUG] JSON parse error:', e.message);
       console.error('[DEBUG] Raw Groq response:', result.text?.slice(0, 800));
+      debug.lastJsonError = e.message;
 
       extra = `Предыдущий ответ не подошёл.
 Верни строго JSON-объект {"rows":[...]}.
@@ -669,8 +753,9 @@ module.exports = async (req, res) => {
     console.error('[DEBUG] recognize failed:', out.error);
     return res.status(out.status || 502).json({
       error: out.error,
-      raw: out.raw,
-      debug: out.debug || null
+      raw: out.raw || null,
+      debug: out.debug || null,
+      baiduLogs: out.debug?.baiduLogs || []
     });
   }
 
@@ -763,6 +848,37 @@ module.exports = async (req, res) => {
   };
 
   console.log('[DEBUG] Final:', JSON.stringify(debugInfo));
+
+  // Если ничего не распознали — возвращаем ошибку с подробностями
+  if (rows.length === 0) {
+    const reason = [
+      `stage=${debugInfo.stage}`,
+      `OCR длина: ${debugInfo.ocrTextLength || 0}`,
+      `OCR source: ${debugInfo.ocrTextSource || '-'}`,
+      `Распознано строк: ${debugInfo.parsedRows || 0}`,
+      `Известных групп: ${debugInfo.knownGroups || 0}`,
+      `Пар найдено: ${debugInfo.pairsFound || 0}`,
+      debugInfo.unknownGroups?.length
+        ? `Неизвестные группы: ${debugInfo.unknownGroups.join(', ')}`
+        : null,
+      debugInfo.lastGroqError
+        ? `Groq error: ${debugInfo.lastGroqError}`
+        : null,
+      debugInfo.ocrPreview
+        ? `OCR: ${String(debugInfo.ocrPreview).slice(0, 150)}`
+        : 'OCR пустой'
+    ].filter(Boolean).join(' | ');
+
+    return res.status(422).json({
+      error: 'Не удалось распознать ни одной строки. ' + reason,
+      rows: [],
+      total: all.length,
+      sample: all.slice(0, 8),
+      debug: debugInfo,
+      baiduLogs: debugInfo.baiduLogs || [],
+      warnings: [...new Set(warnings)]
+    });
+  }
 
   res.status(200).json({
     rows,
