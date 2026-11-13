@@ -316,8 +316,37 @@ function assignPairs(all, warnings) {
 }
 
 // ---------- Вызов модели ----------
-const API_URL = process.env.LLM_API_URL || 'https://api.groq.com/openai/v1/chat/completions';
-const MODEL = process.env.QWEN_MODEL || 'qwen/qwen3.8-27b';
+// Провайдер выбирается по LLM_PROVIDER ('openrouter' | 'mistral' | 'groq'); если не задан — по тому, чей ключ есть в окружении.
+const PROVIDERS = {
+  mistral: {
+    url: 'https://api.mistral.ai/v1/chat/completions',
+    model: 'mistral-small-2603', // псевдоним без привязки к версии: mistral-small-latest
+    keyEnv: 'MISTRAL_API_KEY',
+    maxTokensField: 'max_tokens',
+    detail: null,
+    reasoning: process.env.LLM_REASONING || '', // для Mistral по умолчанию не передаём
+  },
+  openrouter: {
+    url: 'https://openrouter.ai/api/v1/chat/completions',
+    model: 'nvidia/nemotron-3.5-super-vl:free', // бесплатная, лимит 20 запросов/мин и 50/день
+    keyEnv: 'OPENROUTER_API_KEY',
+    maxTokensField: 'max_tokens',
+    detail: null,
+    reasoning: process.env.LLM_REASONING || '',
+  },
+  groq: {
+    url: 'https://api.groq.com/openai/v1/chat/completions',
+    model: 'qwen/qwen3.8-27b',
+    keyEnv: 'GROQ_API_KEY',
+    maxTokensField: 'max_completion_tokens',
+    detail: 'high',
+    reasoning: 'none',
+  },
+};
+const PROVIDER_NAME = (process.env.LLM_PROVIDER || (process.env.OPENROUTER_API_KEY ? 'openrouter' : process.env.MISTRAL_API_KEY ? 'mistral' : 'groq')).toLowerCase();
+const P = PROVIDERS[PROVIDER_NAME] || PROVIDERS.openrouter;
+const API_URL = process.env.LLM_API_URL || P.url;
+const MODEL = process.env.LLM_MODEL || process.env.QWEN_MODEL || P.model;
 const BUDGET_MS = Number(process.env.PARSE_BUDGET_MS) || 55000; // общий лимит времени на все повторы
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -353,27 +382,27 @@ const extractJson = (text) => {
   throw new Error('В ответе нет массива rows');
 };
 
-// strict=true — режим «строго JSON» и без рассуждений; если провайдер его не принял (400), повторяем без него
-async function callModel(image, mt, extra, strict, attempt) {
-  const apiKey = process.env.LLM_API_KEY || process.env.GROQ_API_KEY;
-  if (!apiKey) return { ok: false, fatal: true, status: 500, error: 'Не задан GROQ_API_KEY (или LLM_API_KEY) в переменных окружения' };
+// level: 2 — строгий JSON + без рассуждений, 1 — только строгий JSON, 0 — без дополнительных параметров.
+// Если провайдер не принял параметр (400), recognize() понижает уровень и повторяет запрос.
+async function callModel(image, mt, extra, level, attempt) {
+  const apiKey = process.env.LLM_API_KEY || process.env[P.keyEnv];
+  if (!apiKey) return { ok: false, fatal: true, status: 500, error: `Не задан ${P.keyEnv} (или LLM_API_KEY) в переменных окружения` };
 
+  const url = `data:${mt};base64,${image}`;
   const body = {
     model: MODEL,
-    max_completion_tokens: 8000,
+    [P.maxTokensField]: 8000,
     temperature: 0,
     messages: [{
       role: 'user',
       content: [
         { type: 'text', text: extra ? `${PROMPT}\n\n${extra}` : PROMPT },
-        { type: 'image_url', image_url: { url: `data:${mt};base64,${image}`, detail: 'high' } },
+        { type: 'image_url', image_url: P.detail ? { url, detail: P.detail } : { url } },
       ],
     }],
   };
-  if (strict) {
-    body.reasoning_effort = 'none';
-    body.response_format = { type: 'json_object' };
-  }
+  if (level >= 1) body.response_format = { type: 'json_object' };
+  if (level >= 2 && P.reasoning) body.reasoning_effort = P.reasoning;
 
   const r = await fetch(API_URL, {
     method: 'POST',
@@ -382,10 +411,10 @@ async function callModel(image, mt, extra, strict, attempt) {
   });
   const data = await r.json().catch(() => ({}));
   const content = data.choices?.[0]?.message?.content;
+  // content бывает строкой или списком кусков (у моделей с рассуждениями: куски thinking и text)
   const text = Array.isArray(content)
-    ? content.map((part) => part.text || '').join('')
+    ? content.filter((part) => !part.type || part.type === 'text').map((part) => part.text || '').join('')
     : (typeof content === 'string' ? content : '');
-  // если модель всё же вывела рассуждения в <think>…</think> — убираем
   const clean = text.replace(/<think>[\s\S]*?<\/think>/gi, '');
   const error = data.error?.message || data.message || 'Ошибка API модели';
   return { ok: r.ok, status: r.status, error, text: clean, retryMs: getRetryDelay(r.headers, error, attempt) };
@@ -393,12 +422,12 @@ async function callModel(image, mt, extra, strict, attempt) {
 
 async function recognize(image, mt) {
   const t0 = Date.now();
-  let extra = '', strict = true, lastErr = null, lastText = '';
+  let extra = '', level = 2, lastErr = null, lastText = '';
 
   for (let attempt = 0; attempt < 6; attempt++) {
     let res;
     try {
-      res = await callModel(image, mt, extra, strict, attempt);
+      res = await callModel(image, mt, extra, level, attempt);
     } catch (e) {
       lastErr = { status: 502, error: 'Сеть: ' + e.message };
       if (Date.now() - t0 + 1500 * (attempt + 1) > BUDGET_MS) break;
@@ -410,7 +439,10 @@ async function recognize(image, mt) {
       if (res.fatal) return { error: res.error, status: 502 }; // ошибка настройки — повторять бессмысленно
       lastErr = res;
       console.error('LLM API ERROR:', res.status, res.error);
-      if (res.status === 400 && strict) { strict = false; continue; }
+      if ([400, 404, 422].includes(res.status) && level > 0) { level--; continue; } // параметр не принят — пробуем проще
+      if (res.status === 429 && /per[- ]day|daily|в день/i.test(res.error)) {
+        return { error: 'Исчерпан дневной лимит бесплатной модели: ' + res.error, status: 429 };
+      }
       if (res.status === 429 || res.status >= 500) {
         const wait = (res.status === 429 ? res.retryMs : 2000 * (attempt + 1)) + Math.floor(Math.random() * 700);
         if (Date.now() - t0 + wait > BUDGET_MS) break;
